@@ -4,7 +4,7 @@ import requests
 
 app = FastAPI()
 
-TWO_FACTOR_API_KEY = "your_2factor_api_key_here"
+TWO_FACTOR_API_KEY = "c73eba98-66e1-11f0-a562-0200cd936042"
 
 @app.get("/")
 def root():
