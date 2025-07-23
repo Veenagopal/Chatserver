@@ -2,7 +2,7 @@ annotated-types==0.7.0
 anyio==4.9.0
 click==8.2.1
 colorama==0.4.6
-fastapi==0.115.14
+fastapi==0.115.1
 filelock==3.18.0
 fsspec==2025.5.1
 h11==0.16.0
@@ -21,3 +21,5 @@ sympy==1.14.0
 typing-inspection==0.4.1
 typing_extensions==4.14.0
 uvicorn==0.35.0
+requests==2.31.0
+
