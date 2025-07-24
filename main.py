@@ -18,7 +18,7 @@ class SendOTPRequest(BaseModel):
 def send_otp(request_data: SendOTPRequest):
     phone = request_data.phone
     print("Phone Number =",phone)
-    url = f"https://2factor.in/API/V1/{TWO_FACTOR_API_KEY}/SMS/{phone}/AUTOGEN"
+    url = f"https://2factor.in/API/V1/{TWO_FACTOR_API_KEY}/SMS/{phone}/AUTOGEN/login_otp"
     response = requests.get(url)
     print("Sent request to 2factor server")
     print("Response code===",response.status_code)
