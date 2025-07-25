@@ -7,8 +7,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import Session
 
-from database import init_db
-init_db()
+
+
 
 def get_db():
     db = SessionLocal()
@@ -16,7 +16,8 @@ def get_db():
         yield db
     finally:
         db.close()
-
+from database import init_db        
+init_db()
 app = FastAPI()
 
 # CORS settings
