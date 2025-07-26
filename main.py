@@ -60,6 +60,8 @@ def delete_user(request_data: RegisterUserRequest, db: Session = Depends(get_db)
     if user:
         db.delete(user)
         db.commit()
+        print(f"Deleted user: {request_data.phone}")
+
         return {"status": "deleted"}
     else:
         raise HTTPException(status_code=404, detail="User not found")
