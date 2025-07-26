@@ -11,11 +11,11 @@ from sqlalchemy.orm import sessionmaker, Session
 DATABASE_URL = "sqlite:///./users_v2.db"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-Base = declarative_base()
+#Base = declarative_base()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # User table
-from models import User  
+from models import User , Base 
 Base.metadata.create_all(bind=engine)
 
 # Dependency
