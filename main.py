@@ -13,10 +13,7 @@ Base = declarative_base()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # User table
-class User(Base):
-    __tablename__ = "users"
-    phone = Column(String, primary_key=True, unique=True)
-
+from models import User  
 Base.metadata.create_all(bind=engine)
 
 # Dependency
@@ -42,14 +39,18 @@ app.add_middleware(
 # Request schema
 class RegisterUserRequest(BaseModel):
     phone: str
+    name:str
 
 # Register user
+@app.post("/register-user")
 @app.post("/register-user")
 def register_user(request_data: RegisterUserRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == request_data.phone).first()
     if user:
         return {"status": "exists"}
-    db.add(User(phone=request_data.phone))
+
+    new_user = User(phone=request_data.phone, name=request_data.name)
+    db.add(new_user)
     db.commit()
     return {"status": "registered"}
 
@@ -69,7 +70,17 @@ def delete_user(request_data: RegisterUserRequest, db: Session = Depends(get_db)
 @app.get("/list-users")
 def list_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
-    return {"users": [user.phone for user in users]}
+    return {
+        "users": [
+            {"phone": user.phone, "name": user.name} for user in users
+        ]
+    }
+@app.get("/get-user")
+def get_user(phone: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.phone == phone).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"name": user.name, "phone": user.phone}
 
 # Root
 @app.get("/")
