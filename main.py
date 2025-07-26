@@ -69,6 +69,9 @@ def delete_user(request_data: RegisterUserRequest, db: Session = Depends(get_db)
     
 @app.get("/list-users")
 def list_users(db: Session = Depends(get_db)):
+    for user in db.query(User).all():
+        print(user.phone, user.name)
+
     users = db.query(User).all()
     return {
         "users": [
