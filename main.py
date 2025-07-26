@@ -72,12 +72,12 @@ def list_users(db: Session = Depends(get_db)):
     for user in db.query(User).all():
         print(user.phone, user.name)
 
-    users = db.query(User).all()
-    return {
-        "users": [
-            {"phone": user.phone, "name": user.name} for user in users
-        ]
-    }
+    # users = db.query(User).all()
+    # return {
+    #     "users": [
+    #         {"phone": user.phone, "name": user.name} for user in users
+    #     ]
+    # }
 @app.get("/get-user")
 def get_user(phone: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == phone).first()
