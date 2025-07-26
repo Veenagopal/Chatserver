@@ -7,7 +7,9 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
 # Database
-DATABASE_URL = "sqlite:///./users.db"
+#DATABASE_URL = "sqlite:///./users.db"
+DATABASE_URL = "sqlite:///./users_v2.db"
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 Base = declarative_base()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -66,18 +68,19 @@ def delete_user(request_data: RegisterUserRequest, db: Session = Depends(get_db)
         return {"status": "deleted"}
     else:
         raise HTTPException(status_code=404, detail="User not found")
-    
 @app.get("/list-users")
 def list_users(db: Session = Depends(get_db)):
-    for user in db.query(User).all():
-        print(user.phone, user.name)
+    try:
+        users = db.query(User).all()
+        return {
+            "users": [
+                {"phone": user.phone, "name": user.name} for user in users
+            ]
+        }
+    except Exception as e:
+        print(f"ERROR: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    # users = db.query(User).all()
-    # return {
-    #     "users": [
-    #         {"phone": user.phone, "name": user.name} for user in users
-    #     ]
-    # }
 @app.get("/get-user")
 def get_user(phone: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == phone).first()
