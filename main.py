@@ -43,6 +43,9 @@ class RegisterUserRequest(BaseModel):
     phone: str
     name:str
 
+class DeleteUserRequest(BaseModel):
+    phone: str
+
 # Register user
 @app.post("/register-user")
 @app.post("/register-user")
@@ -58,7 +61,7 @@ def register_user(request_data: RegisterUserRequest, db: Session = Depends(get_d
 
 # Delete user
 @app.post("/delete-user")
-def delete_user(request_data: RegisterUserRequest, db: Session = Depends(get_db)):
+def delete_user(request_data: DeleteUserRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == request_data.phone).first()
     if user:
         db.delete(user)
