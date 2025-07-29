@@ -95,3 +95,24 @@ def get_user(phone: str, db: Session = Depends(get_db)):
 @app.get("/")
 def root():
     return {"message": "Server running with SQLite"}
+
+@app.get("/search-users")
+def search_users(
+    query: str = Query(...),
+    exclude_phone: str = Query(...),  # new
+    db: Session = Depends(get_db)
+):
+    try:
+        results = db.query(User).filter(
+            User.name.ilike(f"%{query}%"),
+            User.phone != exclude_phone  # exclude own phone
+        ).all()
+
+        return {
+            "users": [
+                {"phone": user.phone, "name": user.name} for user in results
+            ]
+        }
+    except Exception as e:
+        print(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
