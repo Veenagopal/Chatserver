@@ -152,6 +152,15 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
         manager.disconnect(phone)
         print(f"{phone} disconnected")
 
+@app.get("/resolve-users")
+def resolve_users(phones: List[str] = Query(...), db: Session = Depends(get_db)):
+    users = db.query(User).filter(User.phone.in_(phones)).all()
+    result = [{"name": user.name, "phone": user.phone} for user in users]
+    return {"users": result}
+
+
+
+
 # Root
 @app.get("/")
 def root():
