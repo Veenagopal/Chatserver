@@ -101,14 +101,19 @@ def root():
 @app.get("/search-users")
 def search_users(
     query: str = Query(...),
-    exclude_phone: str = Query(...),  # new
+    exclude_phone: str = Query(...),
     db: Session = Depends(get_db)
 ):
     try:
         results = db.query(User).filter(
             User.name.ilike(f"%{query}%"),
-            User.phone != exclude_phone  # exclude own phone
+            User.phone != exclude_phone
         ).all()
+
+        # Log matched users
+        print("Search results:")
+        for user in results:
+            print(f"- Name: {user.name}, Phone: {user.phone}")
 
         return {
             "users": [
