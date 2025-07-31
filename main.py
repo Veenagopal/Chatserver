@@ -7,6 +7,8 @@ from datetime import datetime
 
 from database import SessionLocal, init_db
 from models import User, PendingMessage
+import os
+print("FILES IN /data at startup:", os.listdir("/data"))
 
 # --------------------------- INIT ---------------------------
 
