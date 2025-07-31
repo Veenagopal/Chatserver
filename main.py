@@ -1,34 +1,20 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi import Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from fastapi import Query
-from typing import List, Dict
+from sqlalchemy.orm import Session
+from typing import Dict, List
+from datetime import datetime
 
-# Database
-DATABASE_URL = "sqlite:////data/users_v2.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from database import SessionLocal, init_db
+from models import User, PendingMessage
 
-# User table
-from models import User, Base
-Base.metadata.create_all(bind=engine)
+# --------------------------- INIT ---------------------------
 
-# Dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# FastAPI app
 app = FastAPI()
+init_db()
 
-# CORS settings
+# -------------------------- CORS ----------------------------
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,7 +23,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Request schema
+# -------------------------- DB ------------------------------
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ----------------------- Request Schemas --------------------
+
 class RegisterUserRequest(BaseModel):
     phone: str
     name: str
@@ -45,7 +41,8 @@ class RegisterUserRequest(BaseModel):
 class DeleteUserRequest(BaseModel):
     phone: str
 
-# WebSocket connection manager
+# ------------------- WebSocket Manager ----------------------
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
@@ -68,7 +65,8 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# Register user
+# ---------------------- REST APIs ---------------------------
+
 @app.post("/register-user")
 def register_user(request_data: RegisterUserRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == request_data.phone).first()
@@ -79,33 +77,21 @@ def register_user(request_data: RegisterUserRequest, db: Session = Depends(get_d
     db.commit()
     return {"status": "registered"}
 
-# Delete user
 @app.post("/delete-user")
 def delete_user(request_data: DeleteUserRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == request_data.phone).first()
     if user:
         db.delete(user)
         db.commit()
-        print(f"Deleted user: {request_data.phone}")
         return {"status": "deleted"}
     else:
         raise HTTPException(status_code=404, detail="User not found")
 
-# List users
 @app.get("/list-users")
 def list_users(db: Session = Depends(get_db)):
-    try:
-        users = db.query(User).all()
-        return {
-            "users": [
-                {"phone": user.phone, "name": user.name} for user in users
-            ]
-        }
-    except Exception as e:
-        print(f"ERROR: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    users = db.query(User).all()
+    return {"users": [{"phone": user.phone, "name": user.name} for user in users]}
 
-# Get user
 @app.get("/get-user")
 def get_user(phone: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == phone).first()
@@ -113,55 +99,73 @@ def get_user(phone: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return {"name": user.name, "phone": user.phone}
 
-# Search users
 @app.get("/search-users")
-def search_users(
-    query: str = Query(...),
-    exclude_phone: str = Query(...),
-    db: Session = Depends(get_db)
-):
-    try:
-        results = db.query(User).filter(
-            User.name.ilike(f"%{query}%"),
-            User.phone != exclude_phone
-        ).all()
-        print("Search results:")
-        for user in results:
-            print(f"- Name: {user.name}, Phone: {user.phone}")
-        return {
-            "users": [
-                {"phone": user.phone, "name": user.name} for user in results
-            ]
-        }
-    except Exception as e:
-        print(f"Search error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
-# WebSocket endpoint for chat
-@app.websocket("/ws/{phone}")
-async def websocket_endpoint(websocket: WebSocket, phone: str):
-    await manager.connect(phone, websocket)
-    try:
-        while True:
-            data = await websocket.receive_text()
-            print(f"Message from {phone}: {data}")
-            if ":" in data:
-                receiver_phone, message = data.split(":", 1)
-                await manager.send_personal_message(f"{phone}:{message}", receiver_phone)
-    except WebSocketDisconnect:
-        manager.disconnect(phone)
-        print(f"{phone} disconnected")
+def search_users(query: str = Query(...), exclude_phone: str = Query(...), db: Session = Depends(get_db)):
+    results = db.query(User).filter(
+        User.name.ilike(f"%{query}%"),
+        User.phone != exclude_phone
+    ).all()
+    return {"users": [{"phone": user.phone, "name": user.name} for user in results]}
 
 @app.get("/resolve-users")
 def resolve_users(phones: List[str] = Query(...), db: Session = Depends(get_db)):
     users = db.query(User).filter(User.phone.in_(phones)).all()
-    result = [{"name": user.name, "phone": user.phone} for user in users]
-    return {"users": result}
+    return {"users": [{"name": user.name, "phone": user.phone} for user in users]}
 
+# 🧪 Optional Debug: View pending messages for a user
+@app.get("/debug-pending/{receiver_phone}")
+def get_pending_messages(receiver_phone: str, db: Session = Depends(get_db)):
+    messages = db.query(PendingMessage).filter(PendingMessage.receiver_phone == receiver_phone).all()
+    return [
+        {"from": msg.sender_phone, "message": msg.message, "timestamp": msg.timestamp.isoformat()}
+        for msg in messages
+    ]
 
+# ------------------ WebSocket Chat --------------------------
 
+@app.websocket("/ws/{phone}")
+async def websocket_endpoint(websocket: WebSocket, phone: str):
+    await manager.connect(phone, websocket)
+    db = SessionLocal()
 
-# Root
+    try:
+        # 🔁 Step 1: Deliver pending messages
+        pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
+        for msg in pending:
+            await websocket.send_text(f"{msg.sender_phone}:{msg.message}")
+            db.delete(msg)
+        db.commit()
+
+        # 🔁 Step 2: Handle incoming messages
+        while True:
+            data = await websocket.receive_text()
+            print(f"Message from {phone}: {data}")
+
+            if ":" in data:
+                receiver_phone, message = data.split(":", 1)
+
+                if receiver_phone in manager.active_connections:
+                    # Receiver online
+                    await manager.send_personal_message(f"{phone}:{message}", receiver_phone)
+                else:
+                    # Receiver offline → store
+                    pending_msg = PendingMessage(
+                        sender_phone=phone,
+                        receiver_phone=receiver_phone,
+                        message=message,
+                        timestamp=datetime.utcnow()
+                    )
+                    db.add(pending_msg)
+                    db.commit()
+
+    except WebSocketDisconnect:
+        manager.disconnect(phone)
+        print(f"{phone} disconnected")
+    finally:
+        db.close()
+
+# ---------------------- Healthcheck -------------------------
+
 @app.get("/")
 def root():
     return {"message": "Server running with SQLite and WebSocket support"}

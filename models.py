@@ -24,3 +24,12 @@ class Message(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     sender = relationship("User", back_populates="messages")
+
+class PendingMessage(Base):
+    __tablename__ = "pending_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sender_phone = Column(String(20))  # We don't need FK here
+    receiver_phone = Column(String(20))
+    message = Column(Text)
+    timestamp = Column(DateTime, default=datetime.utcnow)
