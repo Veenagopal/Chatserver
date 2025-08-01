@@ -74,10 +74,16 @@ def register_user(request_data: RegisterUserRequest, db: Session = Depends(get_d
     user = db.query(User).filter(User.phone == request_data.phone).first()
     if user:
         return {"status": "exists"}
-    new_user = User(phone=request_data.phone, name=request_data.name)
+
+    new_user = User(
+        phone=request_data.phone,
+        name=request_data.name,
+        publickey=request_data.publickey  # 👈 added this line
+    )
     db.add(new_user)
     db.commit()
     return {"status": "registered"}
+
 
 @app.post("/delete-user")
 def delete_user(request_data: DeleteUserRequest, db: Session = Depends(get_db)):
