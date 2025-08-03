@@ -1,5 +1,4 @@
 import os
-import gdown
 import torch
 import numpy as np
 from fastapi import FastAPI
@@ -7,25 +6,11 @@ from fastapi import FastAPI
 app = FastAPI()
 generator_model = None  # Global variable for the model
 
-# Function to download from Google Drive using file ID
-def download_from_drive(file_id, output):
-    if not os.path.exists(output):
-        url = f"https://drive.google.com/uc?id={file_id}"
-        gdown.download(url, output, quiet=False)
-
 @app.on_event("startup")
 def load_model_on_startup():
     global generator_model
 
-    # Replace with your actual file IDs
-    model_file_id = "YOUR_MODEL_FILE_ID"
-    code_file_id = "YOUR_NCA_MODEL_PY_FILE_ID"
-
-    # Download the model and code file
-    download_from_drive(model_file_id, "best_generator_g2.pt")
-    download_from_drive(code_file_id, "NCA_model.py")
-
-    # Dynamically import NCA_model.py
+    # Dynamically import NCA_model.py (must exist locally in the same directory)
     import importlib.util
     spec = importlib.util.spec_from_file_location("NCA_model", "NCA_model.py")
     module = importlib.util.module_from_spec(spec)
