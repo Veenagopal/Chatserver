@@ -53,4 +53,5 @@ def generate_random():
             bits = bits[:256]
 
         byte_array = np.packbits(bits)
+        
         return {"random_hex": byte_array.tobytes().hex()}
