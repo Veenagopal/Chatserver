@@ -8,12 +8,23 @@ from datetime import datetime
 from database import SessionLocal, init_db
 from models import User, PendingMessage
 import os
+import gdown
+from fastapi import FastAPI
+import torch
+import numpy as np
+from NCA_model import NCAGenerator, get_config
+
+
+
 print("FILES IN /data at startup:", os.listdir("/data"))
 
 # --------------------------- INIT ---------------------------
 
 app = FastAPI()
 init_db()
+
+generator_model = None
+
 
 # -------------------------- CORS ----------------------------
 
@@ -39,6 +50,7 @@ def get_db():
 class RegisterUserRequest(BaseModel):
     phone: str
     name: str
+    publickey: str  
 
 class DeleteUserRequest(BaseModel):
     phone: str
@@ -177,3 +189,50 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
 @app.get("/")
 def root():
     return {"message": "Server running with SQLite and WebSocket support"}
+
+
+#-------------Randome Number---------------------------------------------#
+#  Load model function
+def load_generator_model(path: str):
+    config = get_config()
+    model = NCAGenerator(config)
+    model.load_state_dict(torch.load(path, map_location="cpu"))
+    model.eval()
+    return model
+
+#  Generate 256-bit (32-byte) random number
+def generate_256_bit_random(model):
+    with torch.no_grad():
+        z = torch.randn(1, model.z_dim)  # `z_dim` comes from your config
+        output = model(z)
+        probs = torch.sigmoid(output)
+        bits = (probs > 0.5).int().squeeze().cpu().numpy()
+
+        # Ensure exactly 256 bits
+        if len(bits) < 256:
+            bits = np.pad(bits, (0, 256 - len(bits)), mode='constant')
+        elif len(bits) > 256:
+            bits = bits[:256]
+
+        byte_array = np.packbits(bits)
+        return byte_array.tobytes()
+
+#  Load model on server startup
+@app.on_event("startup")
+def load_model():
+    try:
+        global generator_model
+        generator_model = load_generator_model("best_generator_g2.pt")
+        print(" Generator model loaded")
+    except Exception as e:
+        print(f" Failed to load model: {e}")
+
+
+#  API endpoint
+@app.get("/random-256")
+def get_random_number():
+    if generator_model is None:
+        return {"error": "Model not loaded"}
+    
+    random_bytes = generate_256_bit_random(generator_model)
+    return {"random_256_bit_hex": random_bytes.hex()}
