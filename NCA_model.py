@@ -1,3 +1,7 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 class NCAGenerator(nn.Module):
     def __init__(self, steps=16, channels=16, hidden=128, dropout=0.1, length=128):
         super().__init__()
