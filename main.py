@@ -1,26 +1,16 @@
-import os
 import torch
 import numpy as np
 from fastapi import FastAPI
+from NCA_model import NCAGenerator  # Direct import
 
 app = FastAPI()
-generator_model = None  # Global variable for the model
+generator_model = None  # Global model instance
 
 @app.on_event("startup")
 def load_model_on_startup():
     global generator_model
 
-    # Dynamically import NCA_model.py (must exist locally in the same directory)
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("NCA_model", "NCA_model.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    # Load model class
-    GeneratorClass = module.NCAGenerator
-
-    # Instantiate and load model
-    generator_model = GeneratorClass()
+    generator_model = NCAGenerator()
     generator_model.load_state_dict(torch.load("best_generator_g2.pt", map_location="cpu"))
     generator_model.eval()
 
