@@ -4,7 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
-from torch.amp import autocast, GradScaler
+#from torch.amp import autocast, GradScaler
+from torch.cuda.amp import autocast, GradScaler
+
 import subprocess
 from torch.utils.checkpoint import checkpoint
 from torch.utils.data import Dataset
