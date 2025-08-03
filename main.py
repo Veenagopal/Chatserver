@@ -59,8 +59,11 @@ def generate_random():
         z = torch.randn(1, cfg["channels"], cfg["length"])
         output = generator_model(z)
         probs = torch.sigmoid(output)
-        bits = (probs > 0.5).int().squeeze().cpu().numpy()
-        bits = bits[:256] if len(bits) > 256 else np.pad(bits, (0, 256 - len(bits)), mode='constant')
+        bits = (probs > 0.5).int().cpu().numpy().flatten()
+        bits = bits[:256]  # Now this is truly 256 bits
+
+        # bits = (probs > 0.5).int().squeeze().cpu().numpy()
+        # bits = bits[:256] if len(bits) > 256 else np.pad(bits, (0, 256 - len(bits)), mode='constant')
         byte_array = np.packbits(bits)
         return {
             "random_bits": bits.tolist(),
