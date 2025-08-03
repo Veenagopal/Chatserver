@@ -55,7 +55,8 @@ def generate_random():
         return {"error": "Model not loaded"}
 
     with torch.no_grad():
-        z = torch.randn(1, 128)
+        cfg = get_config()
+        z = torch.randn(1, cfg["channels"], cfg["length"])
         output = generator_model(z)
         probs = torch.sigmoid(output)
         bits = (probs > 0.5).int().squeeze().cpu().numpy()
