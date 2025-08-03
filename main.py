@@ -4,17 +4,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Dict, List
 from datetime import datetime
+import os
+import gdown
+import torch
+import numpy as np
+import importlib.util
 
 from database import SessionLocal, init_db
 from models import User, PendingMessage
-import os
-import gdown
-from fastapi import FastAPI
-import torch
-import numpy as np
-from NCA_model import NCAGenerator, get_config
-
-
 
 print("FILES IN /data at startup:", os.listdir("/data"))
 
@@ -24,7 +21,6 @@ app = FastAPI()
 init_db()
 
 generator_model = None
-
 
 # -------------------------- CORS ----------------------------
 
@@ -50,7 +46,7 @@ def get_db():
 class RegisterUserRequest(BaseModel):
     phone: str
     name: str
-    publickey: str  
+    publickey: str
 
 class DeleteUserRequest(BaseModel):
     phone: str
@@ -90,12 +86,11 @@ def register_user(request_data: RegisterUserRequest, db: Session = Depends(get_d
     new_user = User(
         phone=request_data.phone,
         name=request_data.name,
-        publickey=request_data.publickey  # 👈 added this line
+        publickey=request_data.publickey
     )
     db.add(new_user)
     db.commit()
     return {"status": "registered"}
-
 
 @app.post("/delete-user")
 def delete_user(request_data: DeleteUserRequest, db: Session = Depends(get_db)):
@@ -132,7 +127,6 @@ def resolve_users(phones: List[str] = Query(...), db: Session = Depends(get_db))
     users = db.query(User).filter(User.phone.in_(phones)).all()
     return {"users": [{"name": user.name, "phone": user.phone} for user in users]}
 
-# 🧪 Optional Debug: View pending messages for a user
 @app.get("/debug-pending/{receiver_phone}")
 def get_pending_messages(receiver_phone: str, db: Session = Depends(get_db)):
     messages = db.query(PendingMessage).filter(PendingMessage.receiver_phone == receiver_phone).all()
@@ -149,14 +143,12 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
     db = SessionLocal()
 
     try:
-        # 🔁 Step 1: Deliver pending messages
         pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
         for msg in pending:
             await websocket.send_text(f"{msg.sender_phone}:{msg.message}")
             db.delete(msg)
         db.commit()
 
-        # 🔁 Step 2: Handle incoming messages
         while True:
             data = await websocket.receive_text()
             print(f"Message from {phone}: {data}")
@@ -165,10 +157,8 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
                 receiver_phone, message = data.split(":", 1)
 
                 if receiver_phone in manager.active_connections:
-                    # Receiver online
                     await manager.send_personal_message(f"{phone}:{message}", receiver_phone)
                 else:
-                    # Receiver offline → store
                     pending_msg = PendingMessage(
                         sender_phone=phone,
                         receiver_phone=receiver_phone,
@@ -190,25 +180,15 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
 def root():
     return {"message": "Server running with SQLite and WebSocket support"}
 
+# ------------- Random Number Generator ----------------------
 
-#-------------Randome Number---------------------------------------------#
-#  Load model function
-def load_generator_model(path: str):
-    config = get_config()
-    model = NCAGenerator(config)
-    model.load_state_dict(torch.load(path, map_location="cpu"))
-    model.eval()
-    return model
-
-#  Generate 256-bit (32-byte) random number
 def generate_256_bit_random(model):
     with torch.no_grad():
-        z = torch.randn(1, model.z_dim)  # `z_dim` comes from your config
+        z = torch.randn(1, model.z_dim)
         output = model(z)
         probs = torch.sigmoid(output)
         bits = (probs > 0.5).int().squeeze().cpu().numpy()
 
-        # Ensure exactly 256 bits
         if len(bits) < 256:
             bits = np.pad(bits, (0, 256 - len(bits)), mode='constant')
         elif len(bits) > 256:
@@ -217,22 +197,34 @@ def generate_256_bit_random(model):
         byte_array = np.packbits(bits)
         return byte_array.tobytes()
 
-#  Load model on server startup
 @app.on_event("startup")
 def load_model():
     try:
         global generator_model
-        generator_model = load_generator_model("best_generator_g2.pt")
-        print(" Generator model loaded")
+
+        if not os.path.exists("NCA_model.py"):
+            gdown.download(id="<NCA_MODEL_FILE_ID>", output="NCA_model.py", quiet=False)
+        if not os.path.exists("best_generator_g2.pt"):
+            gdown.download(id="1MAObeavA3UtTe_qHWv6z8uCIfLzk9DLx", output="best_generator_g2.pt", quiet=False)
+
+        spec = importlib.util.spec_from_file_location("NCA_model", "./NCA_model.py")
+        NCA_model = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(NCA_model)
+
+        config = NCA_model.get_config()
+        model = NCA_model.NCAGenerator(config)
+        model.load_state_dict(torch.load("best_generator_g2.pt", map_location="cpu"))
+        model.eval()
+        generator_model = model
+
+        print("✅ Generator model loaded")
     except Exception as e:
-        print(f" Failed to load model: {e}")
+        print(f"❌ Failed to load model: {e}")
 
-
-#  API endpoint
 @app.get("/random-256")
 def get_random_number():
     if generator_model is None:
         return {"error": "Model not loaded"}
-    
+
     random_bytes = generate_256_bit_random(generator_model)
     return {"random_256_bit_hex": random_bytes.hex()}
