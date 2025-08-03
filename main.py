@@ -5,32 +5,36 @@ import numpy as np
 from fastapi import FastAPI
 
 app = FastAPI()
-generator_model = None  # Global placeholder
+generator_model = None  # Global variable for the model
 
-# Function to download from Google Drive
+# Function to download from Google Drive using file ID
 def download_from_drive(file_id, output):
     if not os.path.exists(output):
-        gdown.download(id=file_id, output=output, quiet=False)
+        url = f"https://drive.google.com/uc?id={file_id}"
+        gdown.download(url, output, quiet=False)
 
 @app.on_event("startup")
 def load_model_on_startup():
     global generator_model
 
-    # Download model code and weights
-    download_from_drive("PUT_MODEL_FILE_ID_HERE", "best_generator_g2.pt")
-    download_from_drive("PUT_PY_FILE_ID_HERE", "NCA_model.py")
+    # Replace with your actual file IDs
+    model_file_id = "YOUR_MODEL_FILE_ID"
+    code_file_id = "YOUR_NCA_MODEL_PY_FILE_ID"
 
-    # ✅ Import AFTER downloading
+    # Download the model and code file
+    download_from_drive(model_file_id, "best_generator_g2.pt")
+    download_from_drive(code_file_id, "NCA_model.py")
+
+    # Dynamically import NCA_model.py
     import importlib.util
-
     spec = importlib.util.spec_from_file_location("NCA_model", "NCA_model.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
+    # Load model class
     GeneratorClass = module.NCAGenerator
-    get_config = module.get_config
 
-    # Load model
+    # Instantiate and load model
     generator_model = GeneratorClass()
     generator_model.load_state_dict(torch.load("best_generator_g2.pt", map_location="cpu"))
     generator_model.eval()
@@ -47,11 +51,11 @@ def generate_random():
         probs = torch.sigmoid(output)
         bits = (probs > 0.5).int().squeeze().cpu().numpy()
 
-        if len(bits) < 256:
-            bits = np.pad(bits, (0, 256 - len(bits)), mode='constant')
-        elif len(bits) > 256:
-            bits = bits[:256]
-
+        # Ensure exactly 256 bits
+        bits = bits[:256] if len(bits) > 256 else np.pad(bits, (0, 256 - len(bits)), mode='constant')
         byte_array = np.packbits(bits)
-        
-        return {"random_hex": byte_array.tobytes().hex()}
+
+        return {
+            "random_bits": bits.tolist(),
+            "random_hex": byte_array.tobytes().hex()
+        }
