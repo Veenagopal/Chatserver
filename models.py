@@ -10,6 +10,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)  
     phone = Column(String(20), unique=True, index=True)
+    publickey = Column(String)  # 🔐 Added field to store public key
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     messages = relationship("Message", back_populates="sender")
