@@ -1,16 +1,26 @@
 import torch
 import numpy as np
 from fastapi import FastAPI
-from NCA_model import NCAGenerator  # Direct import
+from NCA_model import NCAGenerator ,get_config # Direct import
 
 app = FastAPI()
 generator_model = None  # Global model instance
+
+
+
 
 @app.on_event("startup")
 def load_model_on_startup():
     global generator_model
 
-    generator_model = NCAGenerator()
+    cfg = get_config()
+    generator_model = NCAGenerator(
+        channels=cfg["channels"],
+        hidden=cfg["hidden"],
+        steps=cfg["steps"],
+        dropout=cfg["dropout"],
+        length=cfg["length"]
+    )
     generator_model.load_state_dict(torch.load("best_generator_g2.pt", map_location="cpu"))
     generator_model.eval()
 
