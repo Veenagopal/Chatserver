@@ -18,7 +18,20 @@ from NCA_model import NCAGenerator, get_config
 
 app = FastAPI()
 init_db()
+
+# -------------------------- DB ------------------------------
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 generator_model = None  # Global model instance
+
+
+
 
 # -------------------------- CORS ----------------------------
 
@@ -118,14 +131,6 @@ def generate_random():
             "random_hex": byte_array.tobytes().hex()
         }
 
-# -------------------------- DB ------------------------------
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # ----------------------- Request Schemas --------------------
 
