@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Dict, List
 from datetime import datetime
+from fastapi import Body
 
 import os
 import torch
@@ -47,6 +48,53 @@ def load_model_on_startup():
     print("Model loaded ✅")
 
 # ---------------------- RNG Endpoint ------------------------
+@app.post("/generate-session-keys")
+def generate_session_keys(from_phone: str, to_phone: str, db: Session = Depends(get_db)):
+    global generator_model
+    if generator_model is None:
+        raise HTTPException(status_code=500, detail="Model not loaded")
+
+    def get_256bit_hex():
+        z = torch.randn(1, 128)
+        out = generator_model(z)
+        bits = (torch.sigmoid(out) > 0.5).int().squeeze().cpu().numpy()
+        bits = bits[:256] if len(bits) > 256 else np.pad(bits, (0, 256 - len(bits)), mode='constant')
+        return np.packbits(bits).tobytes().hex()
+
+    # Generate 2 session keys
+    K1 = get_256bit_hex()
+    K2 = get_256bit_hex()
+
+    # Compose messages
+    sender_key = K1 + K2
+    receiver_key = K2 + K1
+
+    # Dispatch helper
+    def dispatch(sender, receiver, key_data):
+        msg = f"SESSION_KEY:{sender}:{key_data}"
+        if receiver in manager.active_connections:
+            asyncio.create_task(manager.send_personal_message(msg, receiver))
+        else:
+            pending = PendingMessage(
+                sender_phone=sender,
+                receiver_phone=receiver,
+                message=msg,
+                timestamp=datetime.utcnow()
+            )
+            db.add(pending)
+            db.commit()
+
+    # Send to both parties
+    dispatch(from_phone, to_phone, receiver_key)  # receiver gets K2 + K1
+    dispatch(to_phone, from_phone, sender_key)    # sender gets K1 + K2
+
+    return {
+        "sender_hex": sender_key,
+        "receiver_hex": receiver_key,
+        "status": "session keys sent or stored"
+    }
+
+
 
 @app.get("/random-256")
 def generate_random():
