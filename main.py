@@ -31,6 +31,14 @@ def get_db():
 generator_model = None  # Global model instance
 
 
+@app.delete("/delete-db")
+def delete_database():
+    db_path = "users_v2.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+        return {"status": "success", "message": "Database deleted."}
+    else:
+        return {"status": "error", "message": "Database file not found."}
 
 
 # -------------------------- CORS ----------------------------
