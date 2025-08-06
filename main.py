@@ -31,7 +31,7 @@ def get_db():
 generator_model = None  # Global model instance
 
 
-@app.delete("/delete-db")
+@app.get("/delete-db")
 def delete_database():
     db_path = "/opt/render/project/src/users_v2.db"  # <- absolute path
     if os.path.exists(db_path):
