@@ -30,6 +30,17 @@ def get_db():
 
 generator_model = None  # Global model instance
 
+@app.get("/where-is-db")
+def find_database():
+    import os
+
+    candidates = []
+    for root, dirs, files in os.walk("/opt/render/project/src"):
+        for file in files:
+            if file.endswith(".db"):
+                candidates.append(os.path.join(root, file))
+
+    return {"found_db_files": candidates}
 
 @app.get("/delete-db")
 def delete_database():
