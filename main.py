@@ -49,7 +49,7 @@ def find_database():
 
 @app.get("/delete-db")
 def delete_database():
-    db_path = "/opt/render/project/src/users_v2.db"  # <- absolute path
+    db_path = "/data/users_v3.db"  # <- absolute path
     if os.path.exists(db_path):
         os.remove(db_path)
         return {"status": "success", "message": "Database deleted."}
