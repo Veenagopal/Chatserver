@@ -13,6 +13,7 @@ import numpy as np
 from database import SessionLocal, init_db
 from models import User, PendingMessage
 from NCA_model import NCAGenerator, get_config
+from database import DATABASE_URL
 
 # --------------------------- INIT ---------------------------
 
