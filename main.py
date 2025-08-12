@@ -35,12 +35,16 @@ def find_database():
     import os
 
     candidates = []
-    for root, dirs, files in os.walk("/opt/render/project/src"):
+    for root, dirs, files in os.walk("/"):  # search entire container
         for file in files:
             if file.endswith(".db"):
                 candidates.append(os.path.join(root, file))
 
-    return {"found_db_files": candidates}
+    return {
+        "found_db_files": candidates,
+        "cwd": os.getcwd(),
+        "expected_path": os.path.abspath(DATABASE_URL.replace("sqlite:///", ""))
+    }
 
 @app.get("/delete-db")
 def delete_database():
