@@ -15,6 +15,12 @@ from database import SessionLocal, init_db
 from models import User, PendingMessage
 from NCA_model import NCAGenerator, get_config
 from database import DATABASE_URL
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes, serialization
+import numpy as np
+import torch
+
+
 
 # --------------------------- INIT ---------------------------
 
@@ -87,49 +93,104 @@ def load_model_on_startup():
     print("Model loaded ✅")
 
 # ---------------------- RNG Endpoint ------------------------
+import sqlite3
+
+
+
+def get_public_key_for(phone_number: str) -> str | None:
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT public_key FROM users WHERE phone = ?", (phone_number,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return row[0]  # public_key
+    return None
+
+
+
 @app.post("/generate-session-keys")
-def generate_session_keys(sender: str = Form(...), receiver: str = Form(...)):
+async def generate_session_keys(
+    sender: str = Form(...),
+    receiver: str = Form(...),
+    db: Session = Depends(get_db)
+):
     global generator_model
+
     if generator_model is None:
         return {"error": "Model not loaded"}
 
+    # 1. Generate shared 256-bit key
     with torch.no_grad():
         cfg = get_config()
+        z = torch.randn(1, cfg["channels"], cfg["length"])
+        output = generator_model(z)
+        probs = torch.sigmoid(output)
+        bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
+        shared_key_bytes = np.packbits(bits)  # 32 bytes
 
-        # Generate K1
-        z1 = torch.randn(1, cfg["channels"], cfg["length"])
-        output1 = generator_model(z1)
-        probs1 = torch.sigmoid(output1)
-        bits1 = (probs1 > 0.5).int().cpu().numpy().flatten()
-        bits1 = bits1[:256]
-        key1_bytes = np.packbits(bits1)
+    # 2. Load public keys from DB
+    public_key_sender_bytes = get_public_key_for(sender)
+    public_key_receiver_bytes = get_public_key_for(receiver)
 
-        # Generate K2
-        z2 = torch.randn(1, cfg["channels"], cfg["length"])
-        output2 = generator_model(z2)
-        probs2 = torch.sigmoid(output2)
-        bits2 = (probs2 > 0.5).int().cpu().numpy().flatten()
-        bits2 = bits2[:256]
-        key2_bytes = np.packbits(bits2)
+    if not public_key_sender_bytes or not public_key_receiver_bytes:
+        raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
 
-        # Keys in hex
-        key1_hex = key1_bytes.tobytes().hex()
-        key2_hex = key2_bytes.tobytes().hex()
+    pub_key_sender = serialization.load_pem_public_key(public_key_sender_bytes)
+    pub_key_receiver = serialization.load_pem_public_key(public_key_receiver_bytes)
 
-    # Save/deliver logic
-    if receiver in active_connections:
-        active_connections[sender].send_text(f"{key1_hex}{key2_hex}")
-        active_connections[receiver].send_text(f"{key2_hex}{key1_hex}")
+    # 3. Encrypt shared key for both
+    enc_sender = pub_key_sender.encrypt(
+        shared_key_bytes.tobytes(),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+
+    enc_receiver = pub_key_receiver.encrypt(
+        shared_key_bytes.tobytes(),
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+
+    # 4. Prepare payloads with SESSION_KEY prefix
+    import base64
+    payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{base64.b64encode(enc_receiver).decode()}"
+    payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{base64.b64encode(enc_sender).decode()}"
+
+    # 5. Send via WebSocket if online, else store in PendingMessage table
+    if sender in manager.active_connections:
+        await manager.send_personal_message(payload_for_sender, sender)
     else:
-        pending_keys[receiver] = {
-            "from": sender,
-            "keys": (f"{key1_hex}{key2_hex}", f"{key2_hex}{key1_hex}")
-        }
+        db.add(PendingMessage(
+            sender_phone=receiver,
+            receiver_phone=sender,
+            message=payload_for_sender,
+            timestamp=datetime.utcnow()
+        ))
+
+    if receiver in manager.active_connections:
+        await manager.send_personal_message(payload_for_receiver, receiver)
+    else:
+        db.add(PendingMessage(
+            sender_phone=sender,
+            receiver_phone=receiver,
+            message=payload_for_receiver,
+            timestamp=datetime.utcnow()
+        ))
+
+    db.commit()
 
     return {
         "status": "success",
-        "sender_key": key1_hex,
-        "receiver_key": key2_hex
+        "shared_key_hex": shared_key_bytes.tobytes().hex()
     }
 
 
