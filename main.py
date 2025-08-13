@@ -88,58 +88,48 @@ def load_model_on_startup():
 
 # ---------------------- RNG Endpoint ------------------------
 @app.post("/generate-session-keys")
-def generate_session_keys(
-    from_phone: str = Form(...),
-    to_phone: str = Form(...),
-    db: Session = Depends(get_db)
-):
-    print(f"Generating session keys for {from_phone} -> {to_phone}")
-
+def generate_session_keys(sender: str = Form(...), receiver: str = Form(...)):
     global generator_model
     if generator_model is None:
-        raise HTTPException(status_code=500, detail="Model not loaded")
+        return {"error": "Model not loaded"}
 
-    def get_256bit_hex():
-        # Adjust z shape to match your generator’s input
-        z = torch.randn(1, 16, 128)  # (batch=1, channels=16, length=128)
-        out = generator_model(z)
-        
-        # Convert logits to bits
-        bits = (torch.sigmoid(out) > 0.5).int().squeeze().cpu().numpy()
-        
-        # Ensure exactly 256 bits
-        bits = bits[:256] if len(bits) >= 256 else np.pad(bits, (0, 256 - len(bits)), mode='constant')
-        
-        return np.packbits(bits).tobytes().hex()
+    with torch.no_grad():
+        cfg = get_config()
 
-    # Generate 2 session keys
-    K1 = get_256bit_hex()
-    K2 = get_256bit_hex()
+        # Generate K1
+        z1 = torch.randn(1, cfg["channels"], cfg["length"])
+        output1 = generator_model(z1)
+        probs1 = torch.sigmoid(output1)
+        bits1 = (probs1 > 0.5).int().cpu().numpy().flatten()
+        bits1 = bits1[:256]
+        key1_bytes = np.packbits(bits1)
 
-    sender_key = K1 + K2
-    receiver_key = K2 + K1
+        # Generate K2
+        z2 = torch.randn(1, cfg["channels"], cfg["length"])
+        output2 = generator_model(z2)
+        probs2 = torch.sigmoid(output2)
+        bits2 = (probs2 > 0.5).int().cpu().numpy().flatten()
+        bits2 = bits2[:256]
+        key2_bytes = np.packbits(bits2)
 
-    def dispatch(sender, receiver, key_data):
-        msg = f"SESSION_KEY:{sender}:{key_data}"
-        if receiver in manager.active_connections:
-            asyncio.create_task(manager.send_personal_message(msg, receiver))
-        else:
-            pending = PendingMessage(
-                sender_phone=sender,
-                receiver_phone=receiver,
-                message=msg,
-                timestamp=datetime.utcnow()
-            )
-            db.add(pending)
-            db.commit()
+        # Keys in hex
+        key1_hex = key1_bytes.tobytes().hex()
+        key2_hex = key2_bytes.tobytes().hex()
 
-    dispatch(from_phone, to_phone, receiver_key)  # Receiver gets K2+K1
-    dispatch(to_phone, from_phone, sender_key)    # Sender gets K1+K2
+    # Save/deliver logic
+    if receiver in active_connections:
+        active_connections[sender].send_text(f"{key1_hex}{key2_hex}")
+        active_connections[receiver].send_text(f"{key2_hex}{key1_hex}")
+    else:
+        pending_keys[receiver] = {
+            "from": sender,
+            "keys": (f"{key1_hex}{key2_hex}", f"{key2_hex}{key1_hex}")
+        }
 
     return {
-        "sender_hex": sender_key,
-        "receiver_hex": receiver_key,
-        "status": "session keys sent or stored"
+        "status": "success",
+        "sender_key": key1_hex,
+        "receiver_key": key2_hex
     }
 
 
