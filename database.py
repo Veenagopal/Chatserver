@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from models import Base
+import os
 
 #DATABASE_URL = "sqlite:///./chat.db"
 DATABASE_URL = "sqlite:////data/users_v3.db"
