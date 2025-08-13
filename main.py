@@ -88,7 +88,8 @@ def load_model_on_startup():
 
 # ---------------------- RNG Endpoint ------------------------
 @app.post("/generate-session-keys")
-def generate_session_keys(from_phone: str = Form(...),
+def generate_session_keys(
+    from_phone: str = Form(...),
     to_phone: str = Form(...),
     db: Session = Depends(get_db)
 ):
@@ -99,21 +100,25 @@ def generate_session_keys(from_phone: str = Form(...),
         raise HTTPException(status_code=500, detail="Model not loaded")
 
     def get_256bit_hex():
-        z = torch.randn(1, 128)
+        # Adjust z shape to match your generator’s input
+        z = torch.randn(1, 16, 128)  # (batch=1, channels=16, length=128)
         out = generator_model(z)
+        
+        # Convert logits to bits
         bits = (torch.sigmoid(out) > 0.5).int().squeeze().cpu().numpy()
-        bits = bits[:256] if len(bits) > 256 else np.pad(bits, (0, 256 - len(bits)), mode='constant')
+        
+        # Ensure exactly 256 bits
+        bits = bits[:256] if len(bits) >= 256 else np.pad(bits, (0, 256 - len(bits)), mode='constant')
+        
         return np.packbits(bits).tobytes().hex()
 
     # Generate 2 session keys
     K1 = get_256bit_hex()
     K2 = get_256bit_hex()
 
-    # Compose messages
     sender_key = K1 + K2
     receiver_key = K2 + K1
 
-    # Dispatch helper
     def dispatch(sender, receiver, key_data):
         msg = f"SESSION_KEY:{sender}:{key_data}"
         if receiver in manager.active_connections:
@@ -128,16 +133,14 @@ def generate_session_keys(from_phone: str = Form(...),
             db.add(pending)
             db.commit()
 
-    # Send to both parties
-    dispatch(from_phone, to_phone, receiver_key)  # receiver gets K2 + K1
-    dispatch(to_phone, from_phone, sender_key)    # sender gets K1 + K2
+    dispatch(from_phone, to_phone, receiver_key)  # Receiver gets K2+K1
+    dispatch(to_phone, from_phone, sender_key)    # Sender gets K1+K2
 
     return {
         "sender_hex": sender_key,
         "receiver_hex": receiver_key,
         "status": "session keys sent or stored"
     }
-
 
 
 @app.get("/random-256")
