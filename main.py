@@ -220,7 +220,7 @@ def delete_user(request_data: DeleteUserRequest, db: Session = Depends(get_db)):
 @app.get("/list-users")
 def list_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
-    return {"users": [{"phone": user.phone, "name": user.name} for user in users]}
+    return {"users": [{"phone": user.phone, "name": user.name,"publickey":user.publickey} for user in users]}
 
 @app.get("/get-user")
 def get_user(phone: str, db: Session = Depends(get_db)):
