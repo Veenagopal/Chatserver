@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -9,6 +9,7 @@ from fastapi import Body
 import os
 import torch
 import numpy as np
+import asyncio
 
 from database import SessionLocal, init_db
 from models import User, PendingMessage
@@ -87,7 +88,12 @@ def load_model_on_startup():
 
 # ---------------------- RNG Endpoint ------------------------
 @app.post("/generate-session-keys")
-def generate_session_keys(from_phone: str, to_phone: str, db: Session = Depends(get_db)):
+def generate_session_keys(from_phone: str = Form(...),
+    to_phone: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    print(f"Generating session keys for {from_phone} -> {to_phone}")
+
     global generator_model
     if generator_model is None:
         raise HTTPException(status_code=500, detail="Model not loaded")
