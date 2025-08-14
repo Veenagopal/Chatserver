@@ -172,8 +172,11 @@ async def generate_session_keys(
         )
 
         # 4. Prepare payloads with SESSION_KEY prefix
-        payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{base64.b64encode(enc_receiver).decode()}"
-        payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{base64.b64encode(enc_sender).decode()}"
+        # payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{base64.b64encode(enc_receiver).decode()}"
+        # payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{base64.b64encode(enc_sender).decode()}"
+        DELIMITER = "||"
+        payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{DELIMITER}{base64.b64encode(enc_receiver).decode()}"
+        payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{DELIMITER}{base64.b64encode(enc_sender).decode()}"
 
         # 5. Send via WebSocket if online, else store in PendingMessage table
         if sender in manager.active_connections:
@@ -314,6 +317,16 @@ def search_users(query: str = Query(...), exclude_phone: str = Query(...), db: S
 def resolve_users(phones: List[str] = Query(...), db: Session = Depends(get_db)):
     users = db.query(User).filter(User.phone.in_(phones)).all()
     return {"users": [{"name": user.name, "phone": user.phone} for user in users]}
+
+@app.get("/clear-pending-messages")
+def clear_pending_messages(db: Session = Depends(get_db)):
+    try:
+        num_deleted = db.query(PendingMessage).delete()
+        db.commit()
+        return {"status": "success", "deleted_rows": num_deleted}
+    except Exception as e:
+        db.rollback()
+        return {"status": "error", "message": str(e)}
 
 @app.get("/debug-pending/{receiver_phone}")
 def get_pending_messages(receiver_phone: str, db: Session = Depends(get_db)):
