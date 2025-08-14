@@ -96,8 +96,6 @@ def load_model_on_startup():
 # ---------------------- RNG Endpoint ------------------------
 import sqlite3
 
-
-
 def get_public_key_for(phone_number: str) -> str | None:
     db_path = DATABASE_URL.replace("sqlite:///", "")
 
@@ -132,20 +130,26 @@ async def generate_session_keys(
             output = generator_model(z)
             probs = torch.sigmoid(output)
             bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
-            shared_key_bytes = np.packbits(bits)  # 32 bytes
+            shared_key_bytes = np.packbits(bits)
 
         # 2. Load public keys from DB
-        public_key_sender_str = get_public_key_for(sender)
-        print("PUB KEY RAW SENDER:", repr(public_key_sender_str))
+        raw_sender = get_public_key_for(sender)
+        raw_receiver = get_public_key_for(receiver)
 
-        public_key_receiver_str = get_public_key_for(receiver)
-        print("PUB KEY RAW RECEIVER:", repr(public_key_receiver_str))
-        if not public_key_sender_str or not public_key_receiver_str:
+        if not raw_sender or not raw_receiver:
             raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
 
-        # convert to bytes
-        pub_key_sender = serialization.load_pem_public_key(public_key_sender_str.encode("utf-8"))
-        pub_key_receiver = serialization.load_pem_public_key(public_key_receiver_str.encode("utf-8"))
+        # Wrap raw base64 into PEM format
+        def load_pubkey_from_base64(raw_base64: str):
+            pem = "-----BEGIN PUBLIC KEY-----\n"
+            # insert newlines every 64 chars
+            for i in range(0, len(raw_base64), 64):
+                pem += raw_base64[i:i+64] + "\n"
+            pem += "-----END PUBLIC KEY-----\n"
+            return serialization.load_pem_public_key(pem.encode("utf-8"))
+
+        pub_key_sender = load_pubkey_from_base64(raw_sender)
+        pub_key_receiver = load_pubkey_from_base64(raw_receiver)
 
         # 3. Encrypt shared key for both
         enc_sender = pub_key_sender.encrypt(
@@ -156,7 +160,6 @@ async def generate_session_keys(
                 label=None
             )
         )
-
         enc_receiver = pub_key_receiver.encrypt(
             shared_key_bytes.tobytes(),
             padding.OAEP(
@@ -193,14 +196,11 @@ async def generate_session_keys(
 
         db.commit()
 
-        return {
-            "status": "success",
-            "shared_key_hex": shared_key_bytes.tobytes().hex()
-        }
+        return {"status": "success", "shared_key_hex": shared_key_bytes.tobytes().hex()}
+
     except Exception as e:
-        print("🔥 Exception in generate-session-keys:", e)
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        print(" Exception in generate-session-keys:", repr(e))
+        raise HTTPException(status_code=500, detail=f"Server error: {e}")
 
 
 
