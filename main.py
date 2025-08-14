@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes, serialization
 import numpy as np
 import torch
+import traceback
 
 
 
@@ -119,85 +120,85 @@ async def generate_session_keys(
 ):
     global generator_model
 
-    if generator_model is None:
-        return {"error": "Model not loaded"}
+    try:
+        if generator_model is None:
+            return {"error": "Model not loaded"}
 
-    # 1. Generate shared 256-bit key
-    with torch.no_grad():
-        cfg = get_config()
-        z = torch.randn(1, cfg["channels"], cfg["length"])
-        output = generator_model(z)
-        probs = torch.sigmoid(output)
-        bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
-        shared_key_bytes = np.packbits(bits)  # 32 bytes
+        # 1. Generate shared 256-bit key
+        with torch.no_grad():
+            cfg = get_config()
+            z = torch.randn(1, cfg["channels"], cfg["length"])
+            output = generator_model(z)
+            probs = torch.sigmoid(output)
+            bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
+            shared_key_bytes = np.packbits(bits)  # 32 bytes
 
-    # 2. Load public keys from DB
-    public_key_sender_bytes = get_public_key_for(sender)
-    public_key_receiver_bytes = get_public_key_for(receiver)
+        # 2. Load public keys from DB
+        public_key_sender_str = get_public_key_for(sender)
+        public_key_receiver_str = get_public_key_for(receiver)
 
-    if not public_key_sender_bytes or not public_key_receiver_bytes:
-        raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
+        if not public_key_sender_str or not public_key_receiver_str:
+            raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
 
-    # Ensure bytes
-    if isinstance(public_key_sender_bytes, str):
-        public_key_sender_bytes = public_key_sender_bytes.encode('utf-8')
-    if isinstance(public_key_receiver_bytes, str):
-        public_key_receiver_bytes = public_key_receiver_bytes.encode('utf-8')
+        # convert to bytes
+        pub_key_sender = serialization.load_pem_public_key(public_key_sender_str.encode("utf-8"))
+        pub_key_receiver = serialization.load_pem_public_key(public_key_receiver_str.encode("utf-8"))
 
-    pub_key_sender = serialization.load_pem_public_key(public_key_sender_bytes)
-    pub_key_receiver = serialization.load_pem_public_key(public_key_receiver_bytes)
-
-    # 3. Encrypt shared key for both
-    enc_sender = pub_key_sender.encrypt(
-        shared_key_bytes.tobytes(),
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
+        # 3. Encrypt shared key for both
+        enc_sender = pub_key_sender.encrypt(
+            shared_key_bytes.tobytes(),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
         )
-    )
 
-    enc_receiver = pub_key_receiver.encrypt(
-        shared_key_bytes.tobytes(),
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
+        enc_receiver = pub_key_receiver.encrypt(
+            shared_key_bytes.tobytes(),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
         )
-    )
 
-    # 4. Prepare payloads with SESSION_KEY prefix
-    import base64
-    payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{base64.b64encode(enc_receiver).decode()}"
-    payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{base64.b64encode(enc_sender).decode()}"
+        # 4. Prepare payloads with SESSION_KEY prefix
+        payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{base64.b64encode(enc_receiver).decode()}"
+        payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{base64.b64encode(enc_sender).decode()}"
 
-    # 5. Send via WebSocket if online, else store in PendingMessage table
-    if sender in manager.active_connections:
-        await manager.send_personal_message(payload_for_sender, sender)
-    else:
-        db.add(PendingMessage(
-            sender_phone=receiver,
-            receiver_phone=sender,
-            message=payload_for_sender,
-            timestamp=datetime.utcnow()
-        ))
+        # 5. Send via WebSocket if online, else store in PendingMessage table
+        if sender in manager.active_connections:
+            await manager.send_personal_message(payload_for_sender, sender)
+        else:
+            db.add(PendingMessage(
+                sender_phone=receiver,
+                receiver_phone=sender,
+                message=payload_for_sender,
+                timestamp=datetime.utcnow()
+            ))
 
-    if receiver in manager.active_connections:
-        await manager.send_personal_message(payload_for_receiver, receiver)
-    else:
-        db.add(PendingMessage(
-            sender_phone=sender,
-            receiver_phone=receiver,
-            message=payload_for_receiver,
-            timestamp=datetime.utcnow()
-        ))
+        if receiver in manager.active_connections:
+            await manager.send_personal_message(payload_for_receiver, receiver)
+        else:
+            db.add(PendingMessage(
+                sender_phone=sender,
+                receiver_phone=receiver,
+                message=payload_for_receiver,
+                timestamp=datetime.utcnow()
+            ))
 
-    db.commit()
+        db.commit()
 
-    return {
-        "status": "success",
-        "shared_key_hex": shared_key_bytes.tobytes().hex()
-    }
+        return {
+            "status": "success",
+            "shared_key_hex": shared_key_bytes.tobytes().hex()
+        }
+    except Exception as e:
+        print("🔥 Exception in generate-session-keys:", e)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/random-256")
@@ -221,6 +222,7 @@ def generate_random():
             "random_bits": bits.tolist(),
             "random_hex": byte_array.tobytes().hex()
         }
+    
 
 
 # ----------------------- Request Schemas --------------------
