@@ -107,6 +107,7 @@ def get_public_key_for(phone_number: str) -> str | None:
     row = cursor.fetchone()
     conn.close()
     if row:
+        
         return row[0]  # public_key
     return None
 
@@ -135,8 +136,10 @@ async def generate_session_keys(
 
         # 2. Load public keys from DB
         public_key_sender_str = get_public_key_for(sender)
-        public_key_receiver_str = get_public_key_for(receiver)
+        print("PUB KEY RAW SENDER:", repr(public_key_sender_str))
 
+        public_key_receiver_str = get_public_key_for(receiver)
+        print("PUB KEY RAW RECEIVER:", repr(public_key_receiver_str))
         if not public_key_sender_str or not public_key_receiver_str:
             raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
 
