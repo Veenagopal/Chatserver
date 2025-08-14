@@ -1,18 +1,18 @@
+import os
+import sqlite3
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from models import Base
-import os
-import sqlite3  
-#DATABASE_URL = "sqlite:///./chat.db"
+
+# SQLite database file location
 DATABASE_URL = "sqlite:////data/users_v3.db"
-# print("Current working directory:", os.getcwd())
-# print("Resolved DB path:", os.path.abspath(DATABASE_URL.replace("sqlite:///", "")))
 
-
+# SQLAlchemy engine & session
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
+    """Create all tables and print Users table schema."""
     Base.metadata.create_all(bind=engine)
     db_path = DATABASE_URL.replace("sqlite:///", "")
     if os.path.exists(db_path):
@@ -22,8 +22,7 @@ def init_db():
         columns = cursor.fetchall()
         print("\n[DB SCHEMA] Users table columns:")
         for col in columns:
-            print(f" - {col[1]} ({col[2]})")  # col[1]=name, col[2]=type
+            print(f" - {col[1]} ({col[2]})")
         conn.close()
     else:
         print(f"[DB SCHEMA] Database file not found at {db_path}")
-
