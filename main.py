@@ -138,6 +138,12 @@ async def generate_session_keys(
     if not public_key_sender_bytes or not public_key_receiver_bytes:
         raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
 
+    # Ensure bytes
+    if isinstance(public_key_sender_bytes, str):
+        public_key_sender_bytes = public_key_sender_bytes.encode('utf-8')
+    if isinstance(public_key_receiver_bytes, str):
+        public_key_receiver_bytes = public_key_receiver_bytes.encode('utf-8')
+
     pub_key_sender = serialization.load_pem_public_key(public_key_sender_bytes)
     pub_key_receiver = serialization.load_pem_public_key(public_key_receiver_bytes)
 
