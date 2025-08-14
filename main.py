@@ -103,7 +103,7 @@ def get_public_key_for(phone_number: str) -> str | None:
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT public_key FROM users WHERE phone = ?", (phone_number,))
+    cursor.execute("SELECT publickey FROM users WHERE phone = ?", (phone_number,))
     row = cursor.fetchone()
     conn.close()
     if row:
