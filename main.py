@@ -23,24 +23,39 @@ from cryptography.hazmat.primitives import hashes, serialization
 
 # --------------------------- INIT ---------------------------
 app = FastAPI()
-init_db()
+#init_db()
 
-# Path to DB file
-if DATABASE_URL.startswith("sqlite:////"):
-    DB_PATH = DATABASE_URL.replace("sqlite:////", "/", 1)
-elif DATABASE_URL.startswith("sqlite:///"):
-    DB_PATH = DATABASE_URL.replace("sqlite:///", "", 1)
-else:
-    raise ValueError(f"Unsupported DATABASE_URL format: {DATABASE_URL}")
+# Remove the top-level init_db() call
+# init_db()  <-- remove this
 
-# Create DB file if missing
 @app.on_event("startup")
 def startup_event():
-    if not os.path.exists(DB_PATH):
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        open(DB_PATH, "a").close()
-        os.chmod(DB_PATH, 0o666)
-        print(f"[INFO] Database file created at {DB_PATH}")
+    global engine
+    # Determine DB path from DATABASE_URL
+    if DATABASE_URL.startswith("sqlite:////"):
+        db_path = DATABASE_URL.replace("sqlite:////", "/", 1)
+    elif DATABASE_URL.startswith("sqlite:///"):
+        db_path = DATABASE_URL.replace("sqlite:///", "", 1)
+    else:
+        raise ValueError(f"Unsupported DATABASE_URL format: {DATABASE_URL}")
+
+    # Ensure parent directory exists
+    parent_dir = os.path.dirname(db_path)
+    os.makedirs(parent_dir, exist_ok=True)
+
+    # Create DB file if missing
+    if not os.path.exists(db_path):
+        open(db_path, "a").close()
+        print(f"[INFO] Database file created at {db_path}")
+
+    # Ensure writable permissions
+    try:
+        os.chmod(db_path, 0o666)
+        print(f"[INFO] Database permissions set to 666")
+    except PermissionError:
+        print(f"[WARNING] Could not change permissions for {db_path}")
+
+    # Create tables if missing
     Base.metadata.create_all(bind=engine)
     print("[INFO] Database tables created/verified.")
 
