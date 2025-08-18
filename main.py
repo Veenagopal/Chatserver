@@ -278,6 +278,9 @@ async def generate_session_keys_test(
 
     except Exception as e:
         db.rollback()
+        print("❌ ERROR in /generate-session-keys-test:")
+        traceback.print_exc()  # prints full stacktrace to console
+
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.get("/random-256")
