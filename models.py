@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, LargeBinary
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, LargeBinary, UniqueConstraint
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
