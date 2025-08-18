@@ -245,6 +245,17 @@ async def generate_session_keys_test(
         raw_receiver = db.query(User.publickey).filter(User.phone == receiver).scalar()
         if not raw_sender or not raw_receiver:
             raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
+        def load_pubkey(raw_base64: str):
+            try:
+                # clean base64 (remove spaces/newlines just in case)
+                raw_base64 = "".join(raw_base64.strip().split())
+                pem = "-----BEGIN PUBLIC KEY-----\n"
+                pem += "\n".join(raw_base64[i:i+64] for i in range(0, len(raw_base64), 64))
+                pem += "\n-----END PUBLIC KEY-----\n"
+                return serialization.load_pem_public_key(pem.encode("utf-8"))
+            except Exception as e:
+                print("❌ Failed to load public key:", e)
+                raise
 
         pub_sender = load_pubkey(raw_sender)
         pub_receiver = load_pubkey(raw_receiver)
