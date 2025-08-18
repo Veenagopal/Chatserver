@@ -226,78 +226,60 @@ async def generate_session_keys_test(
     db: Session = Depends(get_db)
 ):
     try:
-        # --- 1. Check SessionKey table first ---
-        existing_key = (
-            db.query(SessionKey)
-            .filter(
-                ((SessionKey.sender_phone == sender) & (SessionKey.receiver_phone == receiver)) |
-                ((SessionKey.sender_phone == receiver) & (SessionKey.receiver_phone == sender))
-            )
-            .first()
-        )
+        # Order users consistently
+        user1, user2 = sorted([sender, receiver])
 
-        if existing_key:
-            shared_key_bytes = existing_key.key_bytes
-        else:
-            # --- 2. Use fixed key for testing ---
-            shared_key_bytes = b"123"
-            db.add(SessionKey(
-                sender_phone=sender,
-                receiver_phone=receiver,
-                key_bytes=shared_key_bytes,
-                created_at=datetime.utcnow()
-            ))
-            db.commit()
+        # Check if session key already exists
+        existing = db.query(SessionKey).filter(
+            SessionKey.user1 == user1,
+            SessionKey.user2 == user2
+        ).first()
+        if existing:
+            return {"status": "exists", "message": "Session key already exists"}
 
-        # --- 3. Load public keys ---
-        raw_sender = get_public_key_for(sender)
-        raw_receiver = get_public_key_for(receiver)
+        # Use fixed key for testing
+        shared_key_bytes = b"123"
+
+        # Get public keys
+        raw_sender = db.query(User.publickey).filter(User.phone == sender).scalar()
+        raw_receiver = db.query(User.publickey).filter(User.phone == receiver).scalar()
         if not raw_sender or not raw_receiver:
             raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
 
-        def load_pubkey(raw_base64: str):
-            pem = "-----BEGIN PUBLIC KEY-----\n"
-            pem += "\n".join(raw_base64[i:i+64] for i in range(0, len(raw_base64), 64))
-            pem += "\n-----END PUBLIC KEY-----\n"
-            return serialization.load_pem_public_key(pem.encode("utf-8"))
+        pub_sender = load_pubkey(raw_sender)
+        pub_receiver = load_pubkey(raw_receiver)
 
-        pub_key_sender = load_pubkey(raw_sender)
-        pub_key_receiver = load_pubkey(raw_receiver)
-
-        # --- 4. Encrypt key for both parties ---
-        enc_sender = pub_key_sender.encrypt(
+        # Encrypt the shared key
+        enc_sender = pub_sender.encrypt(
             shared_key_bytes,
-            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                         algorithm=hashes.SHA256(), label=None)
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
         )
-        enc_receiver = pub_key_receiver.encrypt(
+        enc_receiver = pub_receiver.encrypt(
             shared_key_bytes,
-            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                         algorithm=hashes.SHA256(), label=None)
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
         )
 
-        DELIMITER = "||"
-        payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{DELIMITER}{base64.b64encode(enc_receiver).decode()}"
-        payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{DELIMITER}{base64.b64encode(enc_sender).decode()}"
-
-        # --- 5. Send via WebSocket or store pending ---
-        if sender in manager.active_connections:
-            await manager.send_personal_message(f"{sender}:{payload_for_sender}", sender)
-        else:
-            db.add(PendingMessage(sender_phone=receiver, receiver_phone=sender, message=payload_for_sender, timestamp=datetime.utcnow()))
-
-        if receiver in manager.active_connections:
-            await manager.send_personal_message(f"{sender}:{payload_for_receiver}", receiver)
-        else:
-            db.add(PendingMessage(sender_phone=sender, receiver_phone=receiver, message=payload_for_receiver, timestamp=datetime.utcnow()))
-
+        # Save to SessionKey table
+        db.add(SessionKey(
+            user1=user1,
+            user2=user2,
+            key_sender_to_receiver=enc_sender,
+            key_receiver_to_sender=enc_receiver,
+            created_at=datetime.utcnow()
+        ))
         db.commit()
-        return {"status": "success", "shared_key_bytes": shared_key_bytes.hex()}
+
+        # Return encrypted keys as base64
+        return {
+            "status": "success",
+            "sender_encrypted": base64.b64encode(enc_sender).decode(),
+            "receiver_encrypted": base64.b64encode(enc_receiver).decode()
+        }
 
     except Exception as e:
-        print("Exception in generate-session-keys test:", repr(e))
-        raise HTTPException(status_code=500, detail=f"Server error: {e}")
-
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/random-256")
 def generate_random():
     global generator_model
