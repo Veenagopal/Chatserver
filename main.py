@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, init_db, DATABASE_URL, engine
-from models import Base, User, PendingMessage
+from models import Base, User, PendingMessage, SessionKey
 from NCA_model import NCAGenerator, get_config
 
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -296,7 +296,11 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
     try:
         pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
         for msg in pending:
-            await websocket.send_text(f"{msg.sender_phone}:{msg.message}")
+            if msg.message.startswith("SESSION_KEY"):
+                await websocket.send_text(msg.message)  # send raw message
+            else:
+                await websocket.send_text(f"{msg.sender_phone}:{msg.message}")
+            #await websocket.send_text(f"{msg.sender_phone}:{msg.message}")
             db.delete(msg)
         db.commit()
         while True:
