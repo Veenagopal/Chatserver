@@ -157,25 +157,99 @@ def delete_database():
         return {"status": "success", "message": "Database deleted."}
     return {"status": "error", "message": f"Database file not found at {db_path}."}
 
-@app.post("/generate-session-keys")
-async def generate_session_keys(
+# @app.post("/generate-session-keys")
+# async def generate_session_keys(
+#     sender: str = Form(...),
+#     receiver: str = Form(...),
+#     db: Session = Depends(get_db)
+# ):
+#     global generator_model
+#     try:
+#         if generator_model is None:
+#             return {"error": "Model not loaded"}
+
+#         with torch.no_grad():
+#             cfg = get_config()
+#             z = torch.randn(1, cfg["channels"], cfg["length"])
+#             output = generator_model(z)
+#             probs = torch.sigmoid(output)
+#             bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
+#             shared_key_bytes = np.packbits(bits)
+
+#         raw_sender = get_public_key_for(sender)
+#         raw_receiver = get_public_key_for(receiver)
+#         if not raw_sender or not raw_receiver:
+#             raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
+
+#         def load_pubkey(raw_base64: str):
+#             pem = "-----BEGIN PUBLIC KEY-----\n"
+#             pem += "\n".join(raw_base64[i:i+64] for i in range(0, len(raw_base64), 64))
+#             pem += "\n-----END PUBLIC KEY-----\n"
+#             return serialization.load_pem_public_key(pem.encode("utf-8"))
+
+#         pub_key_sender = load_pubkey(raw_sender)
+#         pub_key_receiver = load_pubkey(raw_receiver)
+
+#         enc_sender = pub_key_sender.encrypt(
+#             shared_key_bytes.tobytes(),
+#             padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+#         )
+#         enc_receiver = pub_key_receiver.encrypt(
+#             shared_key_bytes.tobytes(),
+#             padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+#         )
+
+#         DELIMITER = "||"
+#         payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{DELIMITER}{base64.b64encode(enc_receiver).decode()}"
+#         payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{DELIMITER}{base64.b64encode(enc_sender).decode()}"
+
+#         if sender in manager.active_connections:
+#             await manager.send_personal_message(payload_for_sender, sender)
+#         else:
+#             db.add(PendingMessage(sender_phone=receiver, receiver_phone=sender, message=payload_for_sender, timestamp=datetime.utcnow()))
+        
+#         if receiver in manager.active_connections:
+#             await manager.send_personal_message(payload_for_receiver, receiver)
+#         else:
+#             db.add(PendingMessage(sender_phone=sender, receiver_phone=receiver, message=payload_for_receiver, timestamp=datetime.utcnow()))
+        
+#         db.commit()
+#         return {"status": "success", "shared_key_hex": shared_key_bytes.tobytes().hex()}
+
+#     except Exception as e:
+#         print("Exception in generate-session-keys:", repr(e))
+#         raise HTTPException(status_code=500, detail=f"Server error: {e}")
+@app.post("/generate-session-keys-test")
+async def generate_session_keys_test(
     sender: str = Form(...),
     receiver: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    global generator_model
     try:
-        if generator_model is None:
-            return {"error": "Model not loaded"}
+        # --- 1. Check SessionKey table first ---
+        existing_key = (
+            db.query(SessionKey)
+            .filter(
+                ((SessionKey.sender_phone == sender) & (SessionKey.receiver_phone == receiver)) |
+                ((SessionKey.sender_phone == receiver) & (SessionKey.receiver_phone == sender))
+            )
+            .first()
+        )
 
-        with torch.no_grad():
-            cfg = get_config()
-            z = torch.randn(1, cfg["channels"], cfg["length"])
-            output = generator_model(z)
-            probs = torch.sigmoid(output)
-            bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
-            shared_key_bytes = np.packbits(bits)
+        if existing_key:
+            shared_key_bytes = existing_key.key_bytes
+        else:
+            # --- 2. Use fixed key for testing ---
+            shared_key_bytes = b"123"
+            db.add(SessionKey(
+                sender_phone=sender,
+                receiver_phone=receiver,
+                key_bytes=shared_key_bytes,
+                created_at=datetime.utcnow()
+            ))
+            db.commit()
 
+        # --- 3. Load public keys ---
         raw_sender = get_public_key_for(sender)
         raw_receiver = get_public_key_for(receiver)
         if not raw_sender or not raw_receiver:
@@ -190,34 +264,38 @@ async def generate_session_keys(
         pub_key_sender = load_pubkey(raw_sender)
         pub_key_receiver = load_pubkey(raw_receiver)
 
+        # --- 4. Encrypt key for both parties ---
         enc_sender = pub_key_sender.encrypt(
-            shared_key_bytes.tobytes(),
-            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+            shared_key_bytes,
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                         algorithm=hashes.SHA256(), label=None)
         )
         enc_receiver = pub_key_receiver.encrypt(
-            shared_key_bytes.tobytes(),
-            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+            shared_key_bytes,
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                         algorithm=hashes.SHA256(), label=None)
         )
 
         DELIMITER = "||"
         payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_sender).decode()}{DELIMITER}{base64.b64encode(enc_receiver).decode()}"
         payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_receiver).decode()}{DELIMITER}{base64.b64encode(enc_sender).decode()}"
 
+        # --- 5. Send via WebSocket or store pending ---
         if sender in manager.active_connections:
-            await manager.send_personal_message(payload_for_sender, sender)
+            await manager.send_personal_message(f"{sender}:{payload_for_sender}", sender)
         else:
             db.add(PendingMessage(sender_phone=receiver, receiver_phone=sender, message=payload_for_sender, timestamp=datetime.utcnow()))
-        
+
         if receiver in manager.active_connections:
-            await manager.send_personal_message(payload_for_receiver, receiver)
+            await manager.send_personal_message(f"{sender}:{payload_for_receiver}", receiver)
         else:
             db.add(PendingMessage(sender_phone=sender, receiver_phone=receiver, message=payload_for_receiver, timestamp=datetime.utcnow()))
-        
+
         db.commit()
-        return {"status": "success", "shared_key_hex": shared_key_bytes.tobytes().hex()}
+        return {"status": "success", "shared_key_bytes": shared_key_bytes.hex()}
 
     except Exception as e:
-        print("Exception in generate-session-keys:", repr(e))
+        print("Exception in generate-session-keys test:", repr(e))
         raise HTTPException(status_code=500, detail=f"Server error: {e}")
 
 @app.get("/random-256")
