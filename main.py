@@ -339,7 +339,7 @@ async def generate_session_keys_test(
                 receiver=receiver,
                 message="",
 
-                
+
                 keys={
                     "myKey": base64.b64encode(enc_for_receiver).decode(),
                     "otherKey": base64.b64encode(enc_for_sender).decode()
@@ -379,6 +379,8 @@ def generate_random():
         output = generator_model(z)
         probs = torch.sigmoid(output)
         bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
+
+        
         byte_array = np.packbits(bits)
     return {"type": "random_bits", "payload": {"bits": bits.tolist(), "hex": byte_array.tobytes().hex()}}
 
