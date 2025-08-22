@@ -391,14 +391,8 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
         db.close()
 
 
-import json
-from datetime import datetime
-from fastapi import WebSocket
-from sqlalchemy.orm import Session
-from starlette.websockets import WebSocketDisconnect
 
-from models import PendingMessage
-from manager import manager   # your WebSocketManager instance
+
 
 
 async def handleChatMessage(db: Session, websocket: WebSocket, phone: str):
