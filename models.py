@@ -14,18 +14,18 @@ class User(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    messages = relationship("Message", back_populates="sender")
+    #messages = relationship("Message", back_populates="sender")
 
 
-class Message(Base):
-    __tablename__ = 'messages'
+# class Message(Base):
+#     __tablename__ = 'messages'
 
-    id = Column(Integer, primary_key=True, index=True)
-    sender_id = Column(Integer, ForeignKey('users.id'))
-    content = Column(Text)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+#     id = Column(Integer, primary_key=True, index=True)
+#     sender_id = Column(Integer, ForeignKey('users.id'))
+#     content = Column(Text)
+#     timestamp = Column(DateTime, default=datetime.utcnow)
 
-    sender = relationship("User", back_populates="messages")
+#     sender = relationship("User", back_populates="messages")
 
 class PendingMessage(Base):
     __tablename__ = "pending_messages"
@@ -40,12 +40,25 @@ class SessionKey(Base):
     __tablename__ = "session_keys"
 
     id = Column(Integer, primary_key=True, index=True)
-    user1 = Column(String(20), nullable=False)  # smaller phone number
-    user2 = Column(String(20), nullable=False)  # larger phone number
-    key_sender_to_receiver = Column(LargeBinary, nullable=False)
-    key_receiver_to_sender = Column(LargeBinary, nullable=False)
+
+    # Combined string: "+919999999999||BASE64KEY"
+    key1 = Column(LargeBinary, nullable=False)
+    key2 = Column(LargeBinary, nullable=False)
+    # Internal fields (not exposed in API)
+    phone1 = Column(String(20), nullable=False)
+    phone2 = Column(String(20), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (UniqueConstraint("user1", "user2", name="_user_pair_uc"),)
-# Always store user1 < user2 alphabetically or numerically.
-# Unique constraint ensures no duplicate session keys for the same user pair.
+    # Ensure uniqueness at phone number level
+    __table_args__ = (
+        UniqueConstraint("phone1", "phone2", name="_phone_pair_uc"),
+    )
+class PendingSession(Base):
+    id = Column(Integer, primary_key=True, index=True)
+    receiver_phone = Column(String(20), nullable=False)
+    key1 = Column(LargeBinary, nullable=False)
+    key2 = Column(LargeBinary, nullable=False)
+    # Internal fields (not exposed in API)
+    phone1 = Column(String(20), nullable=False)
+    phone2 = Column(String(20), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

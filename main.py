@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, init_db, DATABASE_URL, engine
-from models import Base, User, PendingMessage, SessionKey
+from models import Base, User, PendingMessage, SessionKey, PendingSession
 from NCA_model import NCAGenerator, get_config
 
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -115,7 +115,20 @@ class ConnectionManager:
 
     def disconnect(self, phone: str):
         self.active_connections.pop(phone, None)
-
+        
+    async def send_session_keys(self, phone1: str, phone2: str, receiver: str, key1: bytes, key2: bytes, timestamp: datetime):
+        """Send session keys to a connected client"""
+        if receiver in self.active_connections:
+            await self.active_connections[receiver].send_text(json.dumps({
+                "type": "session_key",
+                "phone1": phone1,
+                "phone2": phone2,
+                "receiver": receiver,
+                "key1": base64.b64encode(key1).decode(),
+                "key2": base64.b64encode(key2).decode(),
+                "timestamp": timestamp.isoformat()
+            }))
+            print("sent to receiver", base64.b64encode(key1).decode(), base64.b64encode(key2).decode())
     async def send_personal_message(self, message_type: str, sender: str, receiver: str,
                                     message: str = "", keys: dict | None = None):
         payload = {
@@ -166,113 +179,29 @@ def delete_database():
     return {"type": "error", "payload": {"message": f"Database file not found at {db_path}."}}
 
 # ---------------------- Session Key / Random -----------------
-# @app.post("/generate-session-keys-test")
-# async def generate_session_keys_test(
-#     sender: str = Form(...),
-#     receiver: str = Form(...),
-#     db: Session = Depends(get_db)
-# ):
-#     try:
-#         global generator_model
-#         if generator_model is None:
-#             raise HTTPException(status_code=500, detail="Generator model not loaded")
-
-#         user1, user2 = sorted([sender, receiver])
-
-#         existing = db.query(SessionKey).filter(
-#             SessionKey.user1 == user1,
-#             SessionKey.user2 == user2
-#         ).first()
-#         if existing:
-#             enc_for_sender = existing.key_sender_to_receiver
-#             enc_for_receiver = existing.key_receiver_to_sender
-#         else:
-#             key_bytes = (123).to_bytes(1, "big").rjust(32, b'\x00')
-
-#             raw_sender = db.query(User.publickey).filter(User.phone == sender).scalar()
-#             raw_receiver = db.query(User.publickey).filter(User.phone == receiver).scalar()
-#             if not raw_sender or not raw_receiver:
-#                 raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
-
-#             def load_pubkey(raw_base64: str):
-#                 try:
-#                     raw = "".join(raw_base64.strip().split())
-#                     if raw_base64.strip().startswith("-----BEGIN"):
-#                         return serialization.load_pem_public_key(raw_base64.encode("utf-8"))
-#                     decoded = base64.b64decode(raw)
-#                     try:
-#                         return serialization.load_der_public_key(decoded)
-#                     except Exception:
-#                         pem = b"-----BEGIN PUBLIC KEY-----\n" + base64.encodebytes(decoded) + b"-----END PUBLIC KEY-----\n"
-#                         return serialization.load_pem_public_key(pem)
-#                 except Exception as e:
-#                     raise ValueError(f"Failed to load public key: {e}")
-
-#             pub_sender = load_pubkey(raw_sender)
-#             pub_receiver = load_pubkey(raw_receiver)
-
-#             enc_for_sender = pub_sender.encrypt(
-#                 key_bytes,
-#                 padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
-#             )
-#             enc_for_receiver = pub_receiver.encrypt(
-#                 key_bytes,
-#                 padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
-#             )
-
-#             db.add(SessionKey(
-#                 user1=user1,
-#                 user2=user2,
-#                 key_sender_to_receiver=enc_for_sender,
-#                 key_receiver_to_sender=enc_for_receiver,
-#                 created_at=datetime.utcnow()
-#             ))
-#             db.commit()
-
-#         DELIM = "||"
-#         payload_for_sender = f"SESSION_KEY:{base64.b64encode(enc_for_sender).decode()}{DELIM}{base64.b64encode(enc_for_receiver).decode()}"
-#         payload_for_receiver = f"SESSION_KEY:{base64.b64encode(enc_for_receiver).decode()}{DELIM}{base64.b64encode(enc_for_sender).decode()}"
-
-#         if sender in manager.active_connections:
-#             await manager.send_personal_message("SESSION_KEY", sender, sender, payload_for_sender, keys={"sender_encrypted": base64.b64encode(enc_for_sender).decode(), "receiver_encrypted": base64.b64encode(enc_for_receiver).decode()})
-#         else:
-#             db.add(PendingMessage(sender_phone=sender, receiver_phone=sender, message=payload_for_sender, timestamp=datetime.utcnow()))
-
-#         if receiver in manager.active_connections:
-#             await manager.send_personal_message("SESSION_KEY", sender, receiver, payload_for_receiver, keys={"sender_encrypted": base64.b64encode(enc_for_sender).decode(), "receiver_encrypted": base64.b64encode(enc_for_receiver).decode()})
-#         else:
-#             db.add(PendingMessage(sender_phone=sender, receiver_phone=receiver, message=payload_for_receiver, timestamp=datetime.utcnow()))
-
-#         db.commit()
-#         return {"type": "success", "payload": {"sender_encrypted": base64.b64encode(enc_for_sender).decode(), "receiver_encrypted": base64.b64encode(enc_for_receiver).decode()}}
-
-#     except Exception as e:
-#         db.rollback()
-#         traceback.print_exc()
-#         raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/generate-session-keys-test")
 async def generate_session_keys_test(
     sender: str = Form(...),
     receiver: str = Form(...),
     db: Session = Depends(get_db)
 ):
+    print(f"🔑 Session key request: sender={sender}, receiver={receiver}")
     try:
-        global generator_model
-        if generator_model is None:
-            raise HTTPException(status_code=500, detail="Generator model not loaded")
-
-        user1, user2 = sorted([sender, receiver])
+        phone1, phone2 = sorted([sender, receiver])
 
         existing = db.query(SessionKey).filter(
-            SessionKey.user1 == user1,
-            SessionKey.user2 == user2
+            SessionKey.phone1 == phone1,
+            SessionKey.phone2 == phone2
         ).first()
 
         if existing:
-            enc_for_sender = existing.key_sender_to_receiver
-            enc_for_receiver = existing.key_receiver_to_sender
+            print("✅ Existing session found in DB")
+            key1 = existing.key1
+            key2 = existing.key2
+            timestamp = existing.created_at
         else:
+            print("🆕 No session found, generating new one...")
+
             key_bytes = (123).to_bytes(1, "big").rjust(32, b'\x00')
 
             raw_sender = db.query(User.publickey).filter(User.phone == sender).scalar()
@@ -288,7 +217,11 @@ async def generate_session_keys_test(
                 try:
                     return serialization.load_der_public_key(decoded)
                 except Exception:
-                    pem = b"-----BEGIN PUBLIC KEY-----\n" + base64.encodebytes(decoded) + b"-----END PUBLIC KEY-----\n"
+                    pem = (
+                        b"-----BEGIN PUBLIC KEY-----\n"
+                        + base64.encodebytes(decoded)
+                        + b"-----END PUBLIC KEY-----\n"
+                    )
                     return serialization.load_pem_public_key(pem)
 
             pub_sender = load_pubkey(raw_sender)
@@ -303,64 +236,63 @@ async def generate_session_keys_test(
                 padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
             )
 
+            timestamp = datetime.utcnow()
             db.add(SessionKey(
-                user1=user1,
-                user2=user2,
-                key_sender_to_receiver=enc_for_sender,
-                key_receiver_to_sender=enc_for_receiver,
-                created_at=datetime.utcnow()
+                phone1=phone1,
+                phone2=phone2,
+                key1=enc_for_sender,
+                key2=enc_for_receiver,
+                created_at=timestamp
             ))
             db.commit()
+            print("💾 Session stored in DB")
 
-        # Send individually: sender gets keys encrypted for them
+            key1, key2 = enc_for_sender, enc_for_receiver
+
+        # Send to sender
         if sender in manager.active_connections:
-            await manager.send_personal_message(
-                message_type="SESSION_KEY",
-                sender=receiver,  # "from" is the other user
+            await manager.send_session_keys(
+                phone1=phone1,
+                phone2=phone2,
                 receiver=sender,
-                message="",
-                keys={
-                    "myKey": base64.b64encode(enc_for_sender).decode(),
-                    "otherKey": base64.b64encode(enc_for_receiver).decode()
-                }
+                key1=key1,
+                key2=key2,
+                timestamp=timestamp
             )
+            print(f"📤 Sent session key to {sender}")
         else:
-            db.add(PendingMessage(
-                sender_phone=receiver,  # "from" is other user
+            db.add(PendingSession(
                 receiver_phone=sender,
-                message="SESSION_KEY",
-                timestamp=datetime.utcnow()
+                key1=key1,
+                key2=key2,
+                phone1=phone1,
+                phone2=phone2,
+                created_at=timestamp
             ))
 
+        # Send to receiver
         if receiver in manager.active_connections:
-            await manager.send_personal_message(
-                message_type="SESSION_KEY",
-                sender=sender,  # "from" is the other user
+            await manager.send_session_keys(
+                phone1=phone1,
+                phone2=phone2,
                 receiver=receiver,
-                message="",
-
-
-                keys={
-                    "myKey": base64.b64encode(enc_for_receiver).decode(),
-                    "otherKey": base64.b64encode(enc_for_sender).decode()
-                }
+                key1=key1,
+                key2=key2,
+                timestamp=timestamp
             )
+            print(f"📤 Sent session key to {receiver}")
         else:
-            db.add(PendingMessage(
-                sender_phone=sender,
+            db.add(PendingSession(
                 receiver_phone=receiver,
-                message="SESSION_KEY",
-                timestamp=datetime.utcnow()
+                key1=key1,
+                key2=key2,
+                phone1=phone1,
+                phone2=phone2,
+                created_at=timestamp
             ))
 
         db.commit()
-        return {
-            "type": "success",
-            "payload": {
-                "sender_encrypted": base64.b64encode(enc_for_sender).decode(),
-                "receiver_encrypted": base64.b64encode(enc_for_receiver).decode()
-            }
-        }
+        return {"type": "success"}
 
     except Exception as e:
         db.rollback()
@@ -380,7 +312,7 @@ def generate_random():
         probs = torch.sigmoid(output)
         bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
 
-        
+
         byte_array = np.packbits(bits)
     return {"type": "random_bits", "payload": {"bits": bits.tolist(), "hex": byte_array.tobytes().hex()}}
 
@@ -446,38 +378,46 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
     await manager.connect(phone, websocket)
     db = SessionLocal()
     try:
-        pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
-        for msg in pending:
-            await websocket.send_text(json.dumps({
-                "from": msg.sender_phone,
-                "to": phone,
-                "type": "pending_message",
-                "message": msg.message,
-                "keys": {},
-                "timestamp": msg.timestamp.isoformat()
-            }))
-            db.delete(msg)
-        db.commit()
+        # 🔹 Handle pending session keys for this user
+        await handleSession(db, websocket, phone)
 
-        while True:
-            data = await websocket.receive_text()
-            print(f"Message from {phone}: {data}")
-            if ":" in data:
-                receiver_phone, message = data.split(":", 1)
-                payload_keys = None
-                message_type = "chat_message"
-
-                if receiver_phone in manager.active_connections:
-                    await manager.send_personal_message(message_type, phone, receiver_phone, message, keys=payload_keys)
-                else:
-                    db.add(PendingMessage(sender_phone=phone, receiver_phone=receiver_phone, message=message, timestamp=datetime.utcnow()))
-                    db.commit()
+        # 🔹 Handle pending chat messages + new messages
+        #await handleChatMessage(db, websocket, phone)
 
     except WebSocketDisconnect:
         manager.disconnect(phone)
         print(f"{phone} disconnected")
     finally:
         db.close()
+
+async def handleSession(self, websocket: WebSocket, phone: str, db: Session):
+    """
+    Deliver all pending session keys for this phone and remove them from PendingSession.
+    """
+    try:
+        pending = (
+            db.query(PendingSession)
+            .filter((PendingSession.phone1 == phone) | (PendingSession.phone2 == phone))
+            .all()
+        )
+
+        for ps in pending:
+            await self.send_session_keys(
+                phone1=ps.phone1,
+                phone2=ps.phone2,
+                receiver=phone,   # current user receiving
+                key1=ps.key1,
+                key2=ps.key2,
+                timestamp=ps.created_at,
+            )
+            
+            db.delete(ps)
+            db.commit()
+
+    except Exception as e:
+        print(f"❌ Error delivering session keys to {phone}: {e}")
+        db.rollback()
+
 
 @app.get("/")
 def root():
