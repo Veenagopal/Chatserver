@@ -187,15 +187,20 @@ async def handle_pending_sessions(db: Session, phone: str):
     ).all()
 
     for ps in pending:
-        await manager.send_session_keys(
-            phone1=ps.phone1,
-            phone2=ps.phone2,
-            receiver=phone,
-            key1=ps.key1,
-            key2=ps.key2,
-            timestamp=ps.created_at
-        )
-        db.delete(ps)
+        try:
+            await manager.send_session_keys(
+                phone1=ps.phone1,
+                phone2=ps.phone2,
+                receiver=phone,
+                key1=ps.key1,
+                key2=ps.key2,
+                timestamp=ps.created_at
+            )
+        except Exception as e:
+            print(f"❌ Failed sending keys to {phone}: {e}")
+        finally:
+            db.delete(ps)
+
     db.commit()
 
 
