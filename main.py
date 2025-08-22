@@ -230,7 +230,9 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                         timestamp=datetime.utcnow()
                     ))
                     db.commit()
-        except WebSocketDisconnect:
+        except WebSocketDisconnect as ii:
+            print(f"WS error for {phone}: {ii}")
+
             manager.disconnect(phone)
             break
 
@@ -415,7 +417,8 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
         await handle_pending_sessions(db, phone)
         # Handle chat messages
         await handle_chat_messages(db, websocket, phone)
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as ee:
+        print(f"WS error for {phone}: {ee}")
         manager.disconnect(phone)
     finally:
         db.close()
