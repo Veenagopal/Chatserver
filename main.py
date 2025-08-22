@@ -382,7 +382,7 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
         await handleSession(db, websocket, phone)
 
         # 🔹 Handle pending chat messages + new messages
-        #await handleChatMessage(db, websocket, phone)
+        await handleChatMessage(db, websocket, phone)
 
     except WebSocketDisconnect:
         manager.disconnect(phone)
@@ -450,7 +450,7 @@ async def handleChatMessage(db: Session, websocket: WebSocket, phone: str):
             print(f"{phone} disconnected")
             break
 
-async def handleSession(self, websocket: WebSocket, phone: str, db: Session):
+async def handleSession( db: Session, websocket: WebSocket, phone: str):
     """
     Deliver all pending session keys for this phone and remove them from PendingSession.
     """
