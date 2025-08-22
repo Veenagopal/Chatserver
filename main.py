@@ -8,9 +8,7 @@ from datetime import datetime
 from typing import Dict, List
 import json
 
-from fastapi import (
-    FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, Form
-)
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -25,9 +23,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 # --------------------------- INIT ---------------------------
 app = FastAPI()
 
+# ----------------------- DATABASE SETUP ---------------------
 @app.on_event("startup")
 def startup_event():
     global engine
+    # Ensure database path exists
     if DATABASE_URL.startswith("sqlite:////"):
         db_path = DATABASE_URL.replace("sqlite:////", "/", 1)
     elif DATABASE_URL.startswith("sqlite:///"):
@@ -51,12 +51,14 @@ def startup_event():
     Base.metadata.create_all(bind=engine)
     print("[INFO] Database tables created/verified.")
 
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
 
 # -------------------------- CORS ----------------------------
 app.add_middleware(
@@ -67,7 +69,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ------------------- Model Loading on Startup ----------------
+# ------------------- MODEL LOADING --------------------------
 generator_model = None
 
 @app.on_event("startup")
@@ -83,9 +85,10 @@ def load_model_on_startup():
     )
     generator_model.load_state_dict(torch.load("best_generator_g2.pt", map_location="cpu"))
     generator_model.eval()
-    print("Model loaded ✅")
+    print("✅ Model loaded")
 
-# ---------------------- Helper -------------------------------
+
+# ---------------------- HELPERS ----------------------------
 def get_public_key_for(phone_number: str) -> str | None:
     db_path = DATABASE_URL.replace("sqlite:///", "")
     conn = sqlite3.connect(db_path)
@@ -95,31 +98,60 @@ def get_public_key_for(phone_number: str) -> str | None:
     conn.close()
     return row[0] if row else None
 
-# ------------------- Request Schemas -------------------------
+
+def load_pubkey(raw_base64: str):
+    raw = "".join(raw_base64.strip().split())
+    if raw_base64.strip().startswith("-----BEGIN"):
+        return serialization.load_pem_public_key(raw_base64.encode("utf-8"))
+    decoded = base64.b64decode(raw)
+    try:
+        return serialization.load_der_public_key(decoded)
+    except Exception:
+        pem = (
+            b"-----BEGIN PUBLIC KEY-----\n"
+            + base64.encodebytes(decoded)
+            + b"-----END PUBLIC KEY-----\n"
+        )
+        return serialization.load_pem_public_key(pem)
+
+
+# ------------------- REQUEST SCHEMAS -----------------------
 class RegisterUserRequest(BaseModel):
     phone: str
     name: str
     publickey: str
 
+
 class DeleteUserRequest(BaseModel):
     phone: str
 
-# ------------------- WebSocket Manager -----------------------
+
+# ------------------- CONNECTION MANAGER --------------------
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
 
-    async def connect(self, phone: str, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, phone: str):
         await websocket.accept()
         self.active_connections[phone] = websocket
+        print(f"✅ Connected: {phone}")
 
     def disconnect(self, phone: str):
         self.active_connections.pop(phone, None)
-        
-    async def send_session_keys(self, phone1: str, phone2: str, receiver: str, key1: bytes, key2: bytes, timestamp: datetime):
-        """Send session keys to a connected client"""
-        if receiver in self.active_connections:
-            await self.active_connections[receiver].send_text(json.dumps({
+        print(f"❌ Disconnected: {phone}")
+
+    async def send_session_keys(
+        self,
+        phone1: str,
+        phone2: str,
+        receiver: str,
+        key1: bytes,
+        key2: bytes,
+        timestamp: datetime,
+    ):
+        websocket = self.active_connections.get(receiver)
+        if websocket:
+            await websocket.send_text(json.dumps({
                 "type": "session_key",
                 "phone1": phone1,
                 "phone2": phone2,
@@ -128,7 +160,8 @@ class ConnectionManager:
                 "key2": base64.b64encode(key2).decode(),
                 "timestamp": timestamp.isoformat()
             }))
-            print("sent to receiver", base64.b64encode(key1).decode(), base64.b64encode(key2).decode())
+            print(f"📤 Sent session keys to {receiver}")
+
     async def send_personal_message(self, message_type: str, sender: str, receiver: str,
                                     message: str = "", keys: dict | None = None):
         payload = {
@@ -139,24 +172,70 @@ class ConnectionManager:
             "keys": keys or {},
             "timestamp": datetime.utcnow().isoformat()
         }
-        if receiver in self.active_connections:
-            await self.active_connections[receiver].send_text(json.dumps(payload))
+        websocket = self.active_connections.get(receiver)
+        if websocket:
+            await websocket.send_text(json.dumps(payload))
 
-    async def broadcast(self, message_type: str, sender: str, message: str, keys: dict | None = None):
-        for receiver, conn in self.active_connections.items():
-            payload = {
-                "from": sender,
-                "to": receiver,
-                "type": message_type,
-                "message": message,
-                "keys": keys or {},
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            await conn.send_text(json.dumps(payload))
 
 manager = ConnectionManager()
 
-# ---------------------- Endpoints ----------------------------
+
+# ---------------------- SESSION / CHAT HANDLING ------------
+async def handle_pending_sessions(db: Session, phone: str):
+    pending = db.query(PendingSession).filter(
+        (PendingSession.phone1 == phone) | (PendingSession.phone2 == phone)
+    ).all()
+
+    for ps in pending:
+        await manager.send_session_keys(
+            phone1=ps.phone1,
+            phone2=ps.phone2,
+            receiver=phone,
+            key1=ps.key1,
+            key2=ps.key2,
+            timestamp=ps.created_at
+        )
+        db.delete(ps)
+    db.commit()
+
+
+async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
+    # Send pending messages first
+    pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
+    for msg in pending:
+        await websocket.send_text(json.dumps({
+            "from": msg.sender_phone,
+            "to": phone,
+            "type": "pending_message",
+            "message": msg.message,
+            "keys": {},
+            "timestamp": msg.timestamp.isoformat()
+        }))
+        db.delete(msg)
+    db.commit()
+
+    # Handle new incoming messages
+    while True:
+        try:
+            data = await websocket.receive_text()
+            if ":" in data:
+                receiver_phone, message = data.split(":", 1)
+                if receiver_phone in manager.active_connections:
+                    await manager.send_personal_message("chat_message", phone, receiver_phone, message)
+                else:
+                    db.add(PendingMessage(
+                        sender_phone=phone,
+                        receiver_phone=receiver_phone,
+                        message=message,
+                        timestamp=datetime.utcnow()
+                    ))
+                    db.commit()
+        except WebSocketDisconnect:
+            manager.disconnect(phone)
+            break
+
+
+# ------------------- ENDPOINTS -----------------------------
 @app.get("/where-is-db")
 def find_database():
     candidates = []
@@ -170,15 +249,16 @@ def find_database():
         "expected_path": os.path.abspath(DATABASE_URL.replace("sqlite:///", ""))
     }}
 
+
 @app.get("/delete-db")
 def delete_database():
-    db_path = "/data/users_v3.db"
+    db_path = DATABASE_URL.replace("sqlite:///", "")
     if os.path.exists(db_path):
         os.remove(db_path)
         return {"type": "success", "payload": {"message": "Database deleted."}}
-    return {"type": "error", "payload": {"message": f"Database file not found at {db_path}."}}
+    return {"type": "error", "payload": {"message": f"Database not found at {db_path}"}}
 
-# ---------------------- Session Key / Random -----------------
+
 @app.post("/generate-session-keys-test")
 async def generate_session_keys_test(
     sender: str = Form(...),
@@ -195,34 +275,16 @@ async def generate_session_keys_test(
         ).first()
 
         if existing:
-            print("✅ Existing session found in DB")
             key1 = existing.key1
             key2 = existing.key2
             timestamp = existing.created_at
+            print("✅ Existing session found")
         else:
-            print("🆕 No session found, generating new one...")
-
             key_bytes = (123).to_bytes(1, "big").rjust(32, b'\x00')
-
             raw_sender = db.query(User.publickey).filter(User.phone == sender).scalar()
             raw_receiver = db.query(User.publickey).filter(User.phone == receiver).scalar()
             if not raw_sender or not raw_receiver:
                 raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
-
-            def load_pubkey(raw_base64: str):
-                raw = "".join(raw_base64.strip().split())
-                if raw_base64.strip().startswith("-----BEGIN"):
-                    return serialization.load_pem_public_key(raw_base64.encode("utf-8"))
-                decoded = base64.b64decode(raw)
-                try:
-                    return serialization.load_der_public_key(decoded)
-                except Exception:
-                    pem = (
-                        b"-----BEGIN PUBLIC KEY-----\n"
-                        + base64.encodebytes(decoded)
-                        + b"-----END PUBLIC KEY-----\n"
-                    )
-                    return serialization.load_pem_public_key(pem)
 
             pub_sender = load_pubkey(raw_sender)
             pub_receiver = load_pubkey(raw_receiver)
@@ -246,54 +308,23 @@ async def generate_session_keys_test(
             ))
             db.commit()
             print("💾 Session stored in DB")
-
             key1, key2 = enc_for_sender, enc_for_receiver
 
-        # Send to sender
-        if sender in manager.active_connections:
-            await manager.send_session_keys(
-                phone1=phone1,
-                phone2=phone2,
-                receiver=sender,
-                key1=key1,
-                key2=key2,
-                timestamp=timestamp
-            )
-            print(f"📤 Sent session key to {sender}")
-        else:
-            db.add(PendingSession(
-                receiver_phone=sender,
-                key1=key1,
-                key2=key2,
-                phone1=phone1,
-                phone2=phone2,
-                created_at=timestamp
-            ))
-
-        # Send to receiver
-        if receiver in manager.active_connections:
-            await manager.send_session_keys(
-                phone1=phone1,
-                phone2=phone2,
-                receiver=receiver,
-                key1=key1,
-                key2=key2,
-                timestamp=timestamp
-            )
-            print(f"📤 Sent session key to {receiver}")
-        else:
-            db.add(PendingSession(
-                receiver_phone=receiver,
-                key1=key1,
-                key2=key2,
-                phone1=phone1,
-                phone2=phone2,
-                created_at=timestamp
-            ))
-
+        # Deliver keys
+        for user in [sender, receiver]:
+            if user in manager.active_connections:
+                await manager.send_session_keys(phone1, phone2, user, key1, key2, timestamp)
+            else:
+                db.add(PendingSession(
+                    receiver_phone=user,
+                    phone1=phone1,
+                    phone2=phone2,
+                    key1=key1,
+                    key2=key2,
+                    created_at=timestamp
+                ))
         db.commit()
         return {"type": "success"}
-
     except Exception as e:
         db.rollback()
         traceback.print_exc()
@@ -311,12 +342,10 @@ def generate_random():
         output = generator_model(z)
         probs = torch.sigmoid(output)
         bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
-
-
         byte_array = np.packbits(bits)
     return {"type": "random_bits", "payload": {"bits": bits.tolist(), "hex": byte_array.tobytes().hex()}}
 
-# ------------------- User Management Endpoints ----------------
+
 @app.post("/register-user")
 def register_user(request: RegisterUserRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == request.phone).first()
@@ -325,6 +354,7 @@ def register_user(request: RegisterUserRequest, db: Session = Depends(get_db)):
     db.add(User(phone=request.phone, name=request.name, publickey=request.publickey))
     db.commit()
     return {"type": "registered", "payload": {}}
+
 
 @app.post("/delete-user")
 def delete_user(request: DeleteUserRequest, db: Session = Depends(get_db)):
@@ -335,10 +365,12 @@ def delete_user(request: DeleteUserRequest, db: Session = Depends(get_db)):
     db.commit()
     return {"type": "deleted", "payload": {}}
 
+
 @app.get("/list-users")
 def list_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
     return {"type": "list_users", "payload": [{"phone": u.phone, "name": u.name, "publickey": u.publickey} for u in users]}
+
 
 @app.get("/get-user")
 def get_user(phone: str, db: Session = Depends(get_db)):
@@ -347,138 +379,49 @@ def get_user(phone: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return {"type": "get_user", "payload": {"name": user.name, "phone": user.phone}}
 
+
 @app.get("/search-users")
 def search_users(query: str, exclude_phone: str, db: Session = Depends(get_db)):
     results = db.query(User).filter(User.name.ilike(f"%{query}%"), User.phone != exclude_phone).all()
     return {"type": "search_users", "payload": [{"phone": u.phone, "name": u.name} for u in results]}
+
 
 @app.get("/resolve-users")
 def resolve_users(phones: List[str] = Query(...), db: Session = Depends(get_db)):
     users = db.query(User).filter(User.phone.in_(phones)).all()
     return {"type": "resolve_users", "payload": [{"name": u.name, "phone": u.phone} for u in users]}
 
+
 @app.get("/clear-pending-messages")
 def clear_pending_messages(db: Session = Depends(get_db)):
-    try:
-        num_deleted = db.query(PendingMessage).delete()
-        db.commit()
-        return {"type": "success", "payload": {"deleted_rows": num_deleted}}
-    except Exception as e:
-        db.rollback()
-        return {"type": "error", "payload": {"message": str(e)}}
+    num_deleted = db.query(PendingMessage).delete()
+    db.commit()
+    return {"type": "success", "payload": {"deleted_rows": num_deleted}}
+
 
 @app.get("/debug-pending/{receiver_phone}")
 def get_pending_messages(receiver_phone: str, db: Session = Depends(get_db)):
     messages = db.query(PendingMessage).filter(PendingMessage.receiver_phone == receiver_phone).all()
     return {"type": "pending_messages", "payload": [{"from": m.sender_phone, "message": m.message, "timestamp": m.timestamp.isoformat()} for m in messages]}
 
-# ------------------- WebSocket Endpoint ----------------------
+
+# ------------------- WEBSOCKET ENDPOINT --------------------
 @app.websocket("/ws/{phone}")
 async def websocket_endpoint(websocket: WebSocket, phone: str):
-    await manager.connect(phone, websocket)
+    await manager.connect(websocket, phone)
     db = SessionLocal()
     try:
-        # 🔹 Handle pending session keys for this user
-        await handleSession(db, websocket, phone)
-
-        # 🔹 Handle pending chat messages + new messages
-        await handleChatMessage(db, websocket, phone)
-
+        # Deliver pending sessions
+        await handle_pending_sessions(db, phone)
+        # Handle chat messages
+        await handle_chat_messages(db, websocket, phone)
     except WebSocketDisconnect:
         manager.disconnect(phone)
-        print(f"{phone} disconnected")
     finally:
         db.close()
 
 
-
-
-
-
-async def handleChatMessage(db: Session, websocket: WebSocket, phone: str):
-    """
-    Handle pending + new chat messages for a given connected user.
-    """
-
-    # 🔹 Send pending messages first
-    pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
-    for msg in pending:
-        await websocket.send_text(json.dumps({
-            "from": msg.sender_phone,
-            "to": phone,
-            "type": "pending_message",
-            "message": msg.message,
-            "keys": {},
-            "timestamp": msg.timestamp.isoformat()
-        }))
-        db.delete(msg)
-    db.commit()
-
-    # 🔹 Process new incoming messages in a loop
-    while True:
-        try:
-            data = await websocket.receive_text()
-            print(f"Message from {phone}: {data}")
-
-            if ":" in data:
-                receiver_phone, message = data.split(":", 1)
-                payload_keys = None
-                message_type = "chat_message"
-
-                if receiver_phone in manager.active_connections:
-                    # Send directly if receiver is online
-                    await manager.send_personal_message(
-                        message_type,
-                        phone,
-                        receiver_phone,
-                        message,
-                        keys=payload_keys
-                    )
-                else:
-                    # Store as pending if receiver offline
-                    db.add(PendingMessage(
-                        sender_phone=phone,
-                        receiver_phone=receiver_phone,
-                        message=message,
-                        timestamp=datetime.utcnow()
-                    ))
-                    db.commit()
-
-        except WebSocketDisconnect:
-            # Break loop if disconnected
-            manager.disconnect(phone)
-            print(f"{phone} disconnected")
-            break
-
-async def handleSession( db: Session, websocket: WebSocket, phone: str):
-    """
-    Deliver all pending session keys for this phone and remove them from PendingSession.
-    """
-    try:
-        pending = (
-            db.query(PendingSession)
-            .filter((PendingSession.phone1 == phone) | (PendingSession.phone2 == phone))
-            .all()
-        )
-
-        for ps in pending:
-            await self.send_session_keys(
-                phone1=ps.phone1,
-                phone2=ps.phone2,
-                receiver=phone,   # current user receiving
-                key1=ps.key1,
-                key2=ps.key2,
-                timestamp=ps.created_at,
-            )
-            
-            db.delete(ps)
-            db.commit()
-
-    except Exception as e:
-        print(f"❌ Error delivering session keys to {phone}: {e}")
-        db.rollback()
-
-
+# ------------------- ROOT -----------------------------
 @app.get("/")
 def root():
     return {"type": "info", "payload": {"message": "Server running with SQLite, WebSocket, and Random Number Generator"}}
