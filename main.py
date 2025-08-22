@@ -390,6 +390,72 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
     finally:
         db.close()
 
+
+import json
+from datetime import datetime
+from fastapi import WebSocket
+from sqlalchemy.orm import Session
+from starlette.websockets import WebSocketDisconnect
+
+from models import PendingMessage
+from manager import manager   # your WebSocketManager instance
+
+
+async def handleChatMessage(db: Session, websocket: WebSocket, phone: str):
+    """
+    Handle pending + new chat messages for a given connected user.
+    """
+
+    # 🔹 Send pending messages first
+    pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
+    for msg in pending:
+        await websocket.send_text(json.dumps({
+            "from": msg.sender_phone,
+            "to": phone,
+            "type": "pending_message",
+            "message": msg.message,
+            "keys": {},
+            "timestamp": msg.timestamp.isoformat()
+        }))
+        db.delete(msg)
+    db.commit()
+
+    # 🔹 Process new incoming messages in a loop
+    while True:
+        try:
+            data = await websocket.receive_text()
+            print(f"Message from {phone}: {data}")
+
+            if ":" in data:
+                receiver_phone, message = data.split(":", 1)
+                payload_keys = None
+                message_type = "chat_message"
+
+                if receiver_phone in manager.active_connections:
+                    # Send directly if receiver is online
+                    await manager.send_personal_message(
+                        message_type,
+                        phone,
+                        receiver_phone,
+                        message,
+                        keys=payload_keys
+                    )
+                else:
+                    # Store as pending if receiver offline
+                    db.add(PendingMessage(
+                        sender_phone=phone,
+                        receiver_phone=receiver_phone,
+                        message=message,
+                        timestamp=datetime.utcnow()
+                    ))
+                    db.commit()
+
+        except WebSocketDisconnect:
+            # Break loop if disconnected
+            manager.disconnect(phone)
+            print(f"{phone} disconnected")
+            break
+
 async def handleSession(self, websocket: WebSocket, phone: str, db: Session):
     """
     Deliver all pending session keys for this phone and remove them from PendingSession.
