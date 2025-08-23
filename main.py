@@ -290,35 +290,40 @@ async def generate_session_keys_test(
         else:
             key_bytes = (123).to_bytes(1, "big").rjust(32, b'\x00')
             raw_sender = db.query(User.publickey).filter(User.phone == sender).scalar()
+            print(sender , " raw public key : ",raw_sender)
             raw_receiver = db.query(User.publickey).filter(User.phone == receiver).scalar()
+            print(receiver , "raw public key : ",raw_receiver)
             if not raw_sender or not raw_receiver:
                 raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
 
             pub_sender = load_pubkey(raw_sender)
+            print(sender , "  public key after loading : ",pub_sender)
             pub_receiver = load_pubkey(raw_receiver)
-
+            print(receiver , "  public key after loading : ",pub_receiver)
             enc_for_sender = pub_sender.encrypt(
                 key_bytes,
                 padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
             )
-
+            print(sender , "  encrypted session key : ",enc_for_sender)
 
 
             enc_for_receiver = pub_receiver.encrypt(
                 key_bytes,
                 padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
             )
+            print(receiver , "  encrypted session key : ",enc_for_receiver)
 
             # Base64-encode for transport
             enc_for_sender_b64 = base64.b64encode(enc_for_sender).decode("ascii")
+            print(sender , "  base 64 enc session key : ",enc_for_sender_b64)
             enc_for_receiver_b64 = base64.b64encode(enc_for_receiver).decode("ascii")
-
+            print(receiver , "  base 64 enc session key : ",enc_for_receiver_b64)
 
 
             timestamp = datetime.utcnow()
             db.add(SessionKey(
-                phone1=phone1,
-                phone2=phone2,
+                phone1=sender,
+                phone2=receiver,
                 key1=enc_for_sender_b64,
                 key2=enc_for_receiver_b64,
                 created_at=timestamp
@@ -330,12 +335,12 @@ async def generate_session_keys_test(
         # Deliver keys
         for user in [sender, receiver]:
             if user in manager.active_connections:
-                await manager.send_session_keys(phone1, phone2, user, key1, key2, timestamp)
+                await manager.send_session_keys(sender, receiver, user, key1, key2, timestamp)
             else:
                 db.add(PendingSession(
                     receiver_phone=user,
-                    phone1=phone1,
-                    phone2=phone2,
+                    phone1=sender,
+                    phone2=receiver,
                     key1=key1,
                     key2=key2,
                     created_at=timestamp
