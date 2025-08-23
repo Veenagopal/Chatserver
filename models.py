@@ -31,8 +31,8 @@ class SessionKey(Base):
     __tablename__ = "session_keys"
 
     id = Column(Integer, primary_key=True, index=True)
-    key1 = Column(LargeBinary, nullable=False)  # sender → receiver
-    key2 = Column(LargeBinary, nullable=False)  # receiver → sender
+    key1 = Column(String(500), nullable=False)    # sender → receiver
+    key2 = Column(String(500), nullable=False)    # receiver → sender
     phone1 = Column(String(20), nullable=False)  # smaller phone number
     phone2 = Column(String(20), nullable=False)  # larger phone number
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -47,8 +47,8 @@ class PendingSession(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     receiver_phone = Column(String(20), nullable=False)
-    key1 = Column(LargeBinary, nullable=False)
-    key2 = Column(LargeBinary, nullable=False)
+    key1 = Column(String(500), nullable=False)  
+    key2 = Column(String(500), nullable=False)  
     phone1 = Column(String(20), nullable=False)
     phone2 = Column(String(20), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)

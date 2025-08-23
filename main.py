@@ -156,8 +156,8 @@ class ConnectionManager:
                 "phone1": phone1,
                 "phone2": phone2,
                 "receiver": receiver,
-                "key1": base64.b64encode(key1).decode(),
-                "key2": base64.b64encode(key2).decode(),
+                "key1": key1,
+                "key2": key2,
                 "timestamp": int(timestamp.timestamp() * 1000)  
             }))
             print(f"📤 Sent session keys to {receiver}")
