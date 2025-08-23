@@ -234,9 +234,9 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                     # Forward with sender info
                     await manager.send_personal_message(
                         "chat_message",
-                        sender_phone=phone,
-                        receiver_phone=receiver_phone,
-                        message=message
+                        phone,
+                        receiver_phone,
+                        message
                     )
                 else:
                     db.add(PendingMessage(
