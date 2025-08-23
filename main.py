@@ -223,10 +223,21 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
     while True:
         try:
             data = await websocket.receive_text()
-            if ":" in data:
-                receiver_phone, message = data.split(":", 1)
+            obj = json.loads(data)
+
+            if obj.get("type") == "chat_message":
+                payload = obj.get("payload", {})
+                receiver_phone = payload.get("to")
+                message = payload.get("message")
+
                 if receiver_phone in manager.active_connections:
-                    await manager.send_personal_message("chat_message", phone, receiver_phone, message)
+                    # Forward with sender info
+                    await manager.send_personal_message(
+                        "chat_message",
+                        sender_phone=phone,
+                        receiver_phone=receiver_phone,
+                        message=message
+                    )
                 else:
                     db.add(PendingMessage(
                         sender_phone=phone,
@@ -237,7 +248,6 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                     db.commit()
         except WebSocketDisconnect as ii:
             print(f"WS error for {phone}: {ii}")
-
             manager.disconnect(phone)
             break
 
@@ -356,7 +366,7 @@ async def generate_session_keys_test(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     
-    
+
 @app.get("/random-256")
 def generate_random():
     global generator_model
