@@ -267,7 +267,6 @@ def delete_database():
 
 
 @app.post("/generate-session-keys-test")
-
 async def generate_session_keys_test(
     sender: str = Form(...),
     receiver: str = Form(...),
@@ -277,49 +276,53 @@ async def generate_session_keys_test(
     try:
         phone1, phone2 = sorted([sender, receiver])
 
+        # Check for existing session
         existing = db.query(SessionKey).filter(
             SessionKey.phone1 == phone1,
             SessionKey.phone2 == phone2
         ).first()
 
         if existing:
-            key1 = existing.key1
-            key2 = existing.key2
+            key1, key2 = existing.key1, existing.key2
             timestamp = existing.created_at
             print("✅ Existing session found")
         else:
+            # Generate 32-byte session key
             key_bytes = (123).to_bytes(1, "big").rjust(32, b'\x00')
+
+            # Load public keys from DB
             raw_sender = db.query(User.publickey).filter(User.phone == sender).scalar()
-            print(sender , " raw public key : ",raw_sender)
             raw_receiver = db.query(User.publickey).filter(User.phone == receiver).scalar()
-            print(receiver , "raw public key : ",raw_receiver)
             if not raw_sender or not raw_receiver:
                 raise HTTPException(status_code=404, detail="Sender or receiver public key not found")
 
+            # Deserialize public keys
             pub_sender = load_pubkey(raw_sender)
-            print(sender , "  public key after loading : ",pub_sender)
             pub_receiver = load_pubkey(raw_receiver)
-            print(receiver , "  public key after loading : ",pub_receiver)
+
+            # Encrypt session key using OAEP SHA-256 / MGF1 SHA-256
             enc_for_sender = pub_sender.encrypt(
                 key_bytes,
-                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
             )
-            print(sender , "  encrypted session key : ",enc_for_sender)
-
-
             enc_for_receiver = pub_receiver.encrypt(
                 key_bytes,
-                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
             )
-            print(receiver , "  encrypted session key : ",enc_for_receiver)
 
             # Base64-encode for transport
             enc_for_sender_b64 = base64.b64encode(enc_for_sender).decode("ascii")
-            print(sender , "  base 64 enc session key : ",enc_for_sender_b64)
             enc_for_receiver_b64 = base64.b64encode(enc_for_receiver).decode("ascii")
-            print(receiver , "  base 64 enc session key : ",enc_for_receiver_b64)
 
-
+            # Store session in DB
             timestamp = datetime.utcnow()
             db.add(SessionKey(
                 phone1=sender,
@@ -333,8 +336,6 @@ async def generate_session_keys_test(
             key1, key2 = enc_for_sender_b64, enc_for_receiver_b64
 
         # Deliver keys
-
-        
         for user in [sender, receiver]:
             if user in manager.active_connections:
                 await manager.send_session_keys(sender, receiver, user, key1, key2, timestamp)
@@ -349,12 +350,13 @@ async def generate_session_keys_test(
                 ))
         db.commit()
         return {"type": "success"}
+
     except Exception as e:
         db.rollback()
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
-
+    
+    
 @app.get("/random-256")
 def generate_random():
     global generator_model
@@ -372,13 +374,29 @@ def generate_random():
 
 @app.post("/register-user")
 def register_user(request: RegisterUserRequest, db: Session = Depends(get_db)):
+    # Check if user already exists
     user = db.query(User).filter(User.phone == request.phone).first()
     if user:
         return {"type": "exists", "payload": {}}
-    db.add(User(phone=request.phone, name=request.name, publickey=request.publickey))
-    db.commit()
-    return {"type": "registered", "payload": {}}
 
+    # Load the uploaded public key
+    try:
+        pub_key = load_pubkey(request.publickey)  # your existing load_pubkey function
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid public key: {e}")
+
+    # Serialize to DER/X.509 and Base64-encode for storage
+    pub_bytes = pub_key.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    pub_b64 = base64.b64encode(pub_bytes).decode("ascii")
+
+    # Store user with DER Base64 public key
+    db.add(User(phone=request.phone, name=request.name, publickey=pub_b64))
+    db.commit()
+
+    return {"type": "registered", "payload": {}}
 
 @app.post("/delete-user")
 def delete_user(request: DeleteUserRequest, db: Session = Depends(get_db)):
