@@ -298,14 +298,15 @@ async def generate_session_keys_test(
 
             enc_for_sender = pub_sender.encrypt(
                 key_bytes,
-                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA1()), algorithm=hashes.SHA1(), label=None)
             )
             enc_for_receiver = pub_receiver.encrypt(
                 key_bytes,
-                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA1()), algorithm=hashes.SHA1(), label=None)
             )
 
-            
+
+
 
             timestamp = datetime.utcnow()
             db.add(SessionKey(
