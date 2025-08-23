@@ -298,16 +298,19 @@ async def generate_session_keys_test(
 
             enc_for_sender = pub_sender.encrypt(
                 key_bytes,
-                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA1()), algorithm=hashes.SHA1(), label=None)
+                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
             )
 
 
-            
+
             enc_for_receiver = pub_receiver.encrypt(
                 key_bytes,
-                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA1()), algorithm=hashes.SHA1(), label=None)
+                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
             )
 
+            # Base64-encode for transport
+            enc_for_sender_b64 = base64.b64encode(enc_for_sender).decode("ascii")
+            enc_for_receiver_b64 = base64.b64encode(enc_for_receiver).decode("ascii")
 
 
 
@@ -315,13 +318,13 @@ async def generate_session_keys_test(
             db.add(SessionKey(
                 phone1=phone1,
                 phone2=phone2,
-                key1=enc_for_sender,
-                key2=enc_for_receiver,
+                key1=enc_for_sender_b64,
+                key2=enc_for_receiver_b64,
                 created_at=timestamp
             ))
             db.commit()
             print("💾 Session stored in DB")
-            key1, key2 = enc_for_sender, enc_for_receiver
+            key1, key2 = enc_for_sender_b64, enc_for_receiver_b64
 
         # Deliver keys
         for user in [sender, receiver]:
