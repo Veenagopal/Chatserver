@@ -248,6 +248,7 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                     db.commit()
         except WebSocketDisconnect as ii:
             print(f"WS error for {phone}: {ii}")
+            traceback.print_exc()
             manager.disconnect(phone)
             break
 
