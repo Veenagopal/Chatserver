@@ -333,6 +333,8 @@ async def generate_session_keys_test(
             key1, key2 = enc_for_sender_b64, enc_for_receiver_b64
 
         # Deliver keys
+
+        
         for user in [sender, receiver]:
             if user in manager.active_connections:
                 await manager.send_session_keys(sender, receiver, user, key1, key2, timestamp)
