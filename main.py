@@ -182,6 +182,8 @@ async def send_personal_message(self, message_type: str, receiver: str, payload:
     """
     payload['timestamp'] = datetime.utcnow().isoformat()
 
+
+
     outer = {
         "type": message_type,
         "payload": payload
