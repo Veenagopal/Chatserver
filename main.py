@@ -175,7 +175,7 @@ class ConnectionManager:
     #     websocket = self.active_connections.get(receiver)
     #     if websocket:
     #         await websocket.send_text(json.dumps(payload))
-    
+
     async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
         """
         Forward an encrypted chat message or other payload to a specific receiver.
@@ -252,7 +252,7 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                         # Forward entire payload with sender info
                         await manager.send_personal_message(
                             "chat_message",
-                            receiver_phone=receiver_phone,
+                            receiver=receiver_phone,
                             payload=payload  # full encrypted payload
                         )
                     else:
