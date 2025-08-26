@@ -175,23 +175,24 @@ class ConnectionManager:
     #     websocket = self.active_connections.get(receiver)
     #     if websocket:
     #         await websocket.send_text(json.dumps(payload))
-async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
-    """
-    Forward an encrypted chat message or other payload to a specific receiver.
-    `payload` already contains 'from', 'to', 'ct', 'iv', 'kpack', etc.
-    """
-    payload['timestamp'] = datetime.utcnow().isoformat()
+    
+    async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
+        """
+        Forward an encrypted chat message or other payload to a specific receiver.
+        `payload` already contains 'from', 'to', 'ct', 'iv', 'kpack', etc.
+        """
+        payload['timestamp'] = datetime.utcnow().isoformat()
 
 
 
-    outer = {
-        "type": message_type,
-        "payload": payload
-    }
+        outer = {
+            "type": message_type,
+            "payload": payload
+        }
 
-    websocket = self.active_connections.get(receiver)
-    if websocket:
-        await websocket.send_text(json.dumps(outer))
+        websocket = self.active_connections.get(receiver)
+        if websocket:
+            await websocket.send_text(json.dumps(outer))
 
 
 
@@ -345,7 +346,7 @@ async def generate_session_keys_test(
                 )
             )
 
-            
+
             enc_for_receiver = pub_receiver.encrypt(
                 key_bytes,
                 padding.OAEP(
