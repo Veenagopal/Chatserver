@@ -162,19 +162,35 @@ class ConnectionManager:
             }))
             print(f"📤 Sent session keys to {receiver}")
 
-    async def send_personal_message(self, message_type: str, sender: str, receiver: str,
-                                    message: str = "", keys: dict | None = None):
-        payload = {
-            "from": sender,
-            "to": receiver,
-            "type": message_type,
-            "message": message,
-            "keys": keys or {},
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        websocket = self.active_connections.get(receiver)
-        if websocket:
-            await websocket.send_text(json.dumps(payload))
+    # async def send_personal_message(self, message_type: str, sender: str, receiver: str,
+    #                                 message: str = "", keys: dict | None = None):
+    #     payload = {
+    #         "from": sender,
+    #         "to": receiver,
+    #         "type": message_type,
+    #         "message": message,
+    #         "keys": keys or {},
+    #         "timestamp": datetime.utcnow().isoformat()
+    #     }
+    #     websocket = self.active_connections.get(receiver)
+    #     if websocket:
+    #         await websocket.send_text(json.dumps(payload))
+async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
+    """
+    Forward an encrypted chat message or other payload to a specific receiver.
+    `payload` already contains 'from', 'to', 'ct', 'iv', 'kpack', etc.
+    """
+    payload['timestamp'] = datetime.utcnow().isoformat()
+
+    outer = {
+        "type": message_type,
+        "payload": payload
+    }
+
+    websocket = self.active_connections.get(receiver)
+    if websocket:
+        await websocket.send_text(json.dumps(outer))
+
 
 
 manager = ConnectionManager()
@@ -197,7 +213,7 @@ async def handle_pending_sessions(db: Session, phone: str):
                 timestamp=ps.created_at
             )
         except Exception as e:
-            print(f"❌ Failed sending keys to {phone}: {e}")
+            print(f" Failed sending keys to {phone}: {e}")
         finally:
             db.delete(ps)
 
@@ -205,52 +221,58 @@ async def handle_pending_sessions(db: Session, phone: str):
 
 
 async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
-    # Send pending messages first
-    pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
-    for msg in pending:
-        await websocket.send_text(json.dumps({
-            "from": msg.sender_phone,
-            "to": phone,
-            "type": "pending_message",
-            "message": msg.message,
-            "keys": {},
-            "timestamp": msg.timestamp.isoformat()
-        }))
-        db.delete(msg)
-    db.commit()
+    try:
+        # Send pending messages first
+        pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
+        for msg in pending:
+            await websocket.send_text(json.dumps({
+                "from": msg.sender_phone,
+                "to": phone,
+                "type": "pending_message",
+                "message": msg.message,
+                "keys": {},  # can be replaced with actual keys if needed
+                "timestamp": msg.timestamp.isoformat()
+            }))
+            db.delete(msg)
+        db.commit()
 
-    # Handle new incoming messages
-    while True:
-        try:
-            data = await websocket.receive_text()
-            obj = json.loads(data)
+        # Handle new incoming messages
+        while True:
+            try:
+                data = await websocket.receive_text()
+                obj = json.loads(data)
 
-            if obj.get("type") == "chat_message":
-                payload = obj.get("payload", {})
-                receiver_phone = payload.get("to")
-                message = payload.get("message")
+                if obj.get("type") == "chat_message":
+                    payload = obj.get("payload", {})
+                    receiver_phone = payload.get("to")
+                    if receiver_phone in manager.active_connections:
+                        # Forward entire payload with sender info
+                        await manager.send_personal_message(
+                            "chat_message",
+                            receiver_phone=receiver_phone,
+                            payload=payload  # full encrypted payload
+                        )
+                    else:
+                        # Store full payload for offline delivery
+                        db.add(PendingMessage(
+                            sender_phone=phone,
+                            receiver_phone=receiver_phone,
+                            payload=json.dumps(payload),
+                            timestamp=datetime.utcnow()
+                        ))
+                        db.commit()
 
-                if receiver_phone in manager.active_connections:
-                    # Forward with sender info
-                    await manager.send_personal_message(
-                        "chat_message",
-                        phone,
-                        receiver_phone,
-                        message
-                    )
-                else:
-                    db.add(PendingMessage(
-                        sender_phone=phone,
-                        receiver_phone=receiver_phone,
-                        message=message,
-                        timestamp=datetime.utcnow()
-                    ))
-                    db.commit()
-        except WebSocketDisconnect as ii:
-            print(f"WS error for {phone}: {ii}")
-            traceback.print_exc()
-            manager.disconnect(phone)
-            break
+            except WebSocketDisconnect as ii:
+                print(f"WS disconnected for {phone}: {ii}")
+                manager.disconnect(phone)
+                break
+            except Exception as e:
+                print(f"Error handling message from {phone}: {e}")
+                traceback.print_exc()
+
+    except Exception as outer_e:
+        print(f"Error in handle_chat_messages for {phone}: {outer_e}")
+        traceback.print_exc()
 
 
 # ------------------- ENDPOINTS -----------------------------
