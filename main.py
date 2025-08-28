@@ -29,38 +29,45 @@ app = FastAPI()
 def list_data():
     return {"files": os.listdir("/data")}
 
+# @app.on_event("startup")
+# def startup_event():
+#     global engine
+#     # Ensure database path exists
+#     if DATABASE_URL.startswith("sqlite:////"):
+#         db_path = DATABASE_URL.replace("sqlite:////", "/", 1)
+#     elif DATABASE_URL.startswith("sqlite:///"):
+#         db_path = DATABASE_URL.replace("sqlite:///", "", 1)
+#     else:
+#         raise ValueError(f"Unsupported DATABASE_URL format: {DATABASE_URL}")
+
+#     parent_dir = os.path.dirname(db_path)
+#     os.makedirs(parent_dir, exist_ok=True)
+
+#     if not os.path.exists(db_path):
+#         open(db_path, "a").close()
+#         print(f"[INFO] Database file created at {db_path}")
+
+#     try:
+#         os.chmod(db_path, 0o666)
+#         print(f"[INFO] Database permissions set to 666")
+#     except PermissionError:
+#         print(f"[WARNING] Could not change permissions for {db_path}")
+
+#     Base.metadata.create_all(bind=engine)
+#     print("[INFO] Database tables created/verified.")
+#         # 🔍 Check what SQLite is really connected to
+#     with engine.connect() as conn:
+#         result = conn.execute(text("PRAGMA database_list;"))
+#         for row in result.fetchall():
+#             print(f"[DEBUG] Connected DB: {row}")
+
 @app.on_event("startup")
 def startup_event():
-    global engine
-    # Ensure database path exists
-    if DATABASE_URL.startswith("sqlite:////"):
-        db_path = DATABASE_URL.replace("sqlite:////", "/", 1)
-    elif DATABASE_URL.startswith("sqlite:///"):
-        db_path = DATABASE_URL.replace("sqlite:///", "", 1)
-    else:
-        raise ValueError(f"Unsupported DATABASE_URL format: {DATABASE_URL}")
-
-    parent_dir = os.path.dirname(db_path)
-    os.makedirs(parent_dir, exist_ok=True)
-
-    if not os.path.exists(db_path):
-        open(db_path, "a").close()
-        print(f"[INFO] Database file created at {db_path}")
-
-    try:
-        os.chmod(db_path, 0o666)
-        print(f"[INFO] Database permissions set to 666")
-    except PermissionError:
-        print(f"[WARNING] Could not change permissions for {db_path}")
-
     Base.metadata.create_all(bind=engine)
     print("[INFO] Database tables created/verified.")
-        # 🔍 Check what SQLite is really connected to
     with engine.connect() as conn:
-        result = conn.execute(text("PRAGMA database_list;"))
-        for row in result.fetchall():
-            print(f"[DEBUG] Connected DB: {row}")
-
+        result = conn.execute(text("SELECT current_database(), current_user;"))
+        print(f"[DEBUG] Connected to DB: {result.fetchone()}")
 
 
 def get_db():
@@ -100,15 +107,18 @@ def load_model_on_startup():
 
 
 # ---------------------- HELPERS ----------------------------
-def get_public_key_for(phone_number: str) -> str | None:
-    db_path = DATABASE_URL.replace("sqlite:///", "")
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT publickey FROM users WHERE phone = ?", (phone_number,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else None
+# def get_public_key_for(phone_number: str) -> str | None:
+#     db_path = DATABASE_URL.replace("sqlite:///", "")
+#     conn = sqlite3.connect(db_path)
+#     cursor = conn.cursor()
+#     cursor.execute("SELECT publickey FROM users WHERE phone = ?", (phone_number,))
+#     row = cursor.fetchone()
+#     conn.close()
+#     return row[0] if row else None
 
+def get_public_key_for(phone_number: str, db: Session) -> str | None:
+    user = db.query(User).filter(User.phone == phone_number).first()
+    return user.publickey if user else None
 
 def load_pubkey(raw_base64: str):
     raw = "".join(raw_base64.strip().split())
@@ -294,27 +304,27 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
 
 
 # ------------------- ENDPOINTS -----------------------------
-@app.get("/where-is-db")
-def find_database():
-    candidates = []
-    for root, dirs, files in os.walk("/"):
-        for file in files:
-            if file.endswith(".db"):
-                candidates.append(os.path.join(root, file))
-    return {"type": "info", "payload": {
-        "found_db_files": candidates,
-        "cwd": os.getcwd(),
-        "expected_path": os.path.abspath(DATABASE_URL.replace("sqlite:///", ""))
-    }}
+# @app.get("/where-is-db")
+# def find_database():
+#     candidates = []
+#     for root, dirs, files in os.walk("/"):
+#         for file in files:
+#             if file.endswith(".db"):
+#                 candidates.append(os.path.join(root, file))
+#     return {"type": "info", "payload": {
+#         "found_db_files": candidates,
+#         "cwd": os.getcwd(),
+#         "expected_path": os.path.abspath(DATABASE_URL.replace("sqlite:///", ""))
+#     }}
 
 
-@app.get("/delete-db")
-def delete_database():
-    db_path = DATABASE_URL.replace("sqlite:///", "")
-    if os.path.exists(db_path):
-        os.remove(db_path)
-        return {"type": "success", "payload": {"message": "Database deleted."}}
-    return {"type": "error", "payload": {"message": f"Database not found at {db_path}"}}
+# @app.get("/delete-db")
+# def delete_database():
+#     db_path = DATABASE_URL.replace("sqlite:///", "")
+#     if os.path.exists(db_path):
+#         os.remove(db_path)
+#         return {"type": "success", "payload": {"message": "Database deleted."}}
+#     return {"type": "error", "payload": {"message": f"Database not found at {db_path}"}}
 
 
 @app.post("/generate-session-keys-test")
@@ -520,4 +530,4 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
 # ------------------- ROOT -----------------------------
 @app.get("/")
 def root():
-    return {"type": "info", "payload": {"message": "Server running with SQLite, WebSocket, and Random Number Generator"}}
+    return {"type": "info", "payload": {"message": "Server running with Postgres (Neon), WebSocket, and Random Number Generator"}}
