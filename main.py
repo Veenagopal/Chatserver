@@ -260,6 +260,7 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                         )
                     else:
                         # Store full payload for offline delivery
+                        print("Receiver "+phone+" is offline storing in PendingMessage table")
                         db.add(PendingMessage(
                             sender_phone=phone,
                             receiver_phone=receiver_phone,
