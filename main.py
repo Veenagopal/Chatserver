@@ -147,77 +147,140 @@ class DeleteUserRequest(BaseModel):
     phone: str
 
 
-# ------------------- CONNECTION MANAGER --------------------
+# # ------------------- CONNECTION MANAGER --------------------
+# class ConnectionManager:
+#     def __init__(self):
+#         self.active_connections: Dict[str, WebSocket] = {}
+
+#     async def connect(self, websocket: WebSocket, phone: str):
+#         await websocket.accept()
+#         self.active_connections[phone] = websocket
+#         print(f"✅ Connected: {phone}")
+
+#     def disconnect(self, phone: str):
+#         self.active_connections.pop(phone, None)
+#         print(f"❌ Disconnected: {phone}")
+
+#     async def send_session_keys(
+#         self,
+#         phone1: str,
+#         phone2: str,
+#         receiver: str,
+#         key1: bytes,
+#         key2: bytes,
+#         timestamp: datetime,
+#     ):
+#         websocket = self.active_connections.get(receiver)
+#         if websocket:
+#             await websocket.send_text(json.dumps({
+#                 "type": "session_key",
+#                 "phone1": phone1,
+#                 "phone2": phone2,
+#                 "receiver": receiver,
+#                 "key1": key1,
+#                 "key2": key2,
+#                 "timestamp": int(timestamp.timestamp() * 1000)  
+#             }))
+#             print(f"📤 Sent session keys to {receiver}")
+
+#     # async def send_personal_message(self, message_type: str, sender: str, receiver: str,
+#     #                                 message: str = "", keys: dict | None = None):
+#     #     payload = {
+#     #         "from": sender,
+#     #         "to": receiver,
+#     #         "type": message_type,
+#     #         "message": message,
+#     #         "keys": keys or {},
+#     #         "timestamp": datetime.utcnow().isoformat()
+#     #     }
+#     #     websocket = self.active_connections.get(receiver)
+#     #     if websocket:
+#     #         await websocket.send_text(json.dumps(payload))
+
+#     async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
+#         """
+#         Forward an encrypted chat message or other payload to a specific receiver.
+#         `payload` already contains 'from', 'to', 'ct', 'iv', 'kpack', etc.
+#         """
+#         payload['timestamp'] = datetime.utcnow().isoformat()
+
+
+
+#         outer = {
+#             "type": message_type,
+#             "payload": payload
+#         }
+
+#         websocket = self.active_connections.get(receiver)
+#         if websocket:
+#             await websocket.send_text(json.dumps(outer))
+
+
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
+        # Each phone can have multiple WebSocket connections
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+
+    def normalize_phone(self, phone: str) -> str:
+        return phone.strip().replace(" ", "").replace("-", "")
 
     async def connect(self, websocket: WebSocket, phone: str):
         await websocket.accept()
-        self.active_connections[phone] = websocket
+        phone = self.normalize_phone(phone)
+        if phone not in self.active_connections:
+            self.active_connections[phone] = []
+        self.active_connections[phone].append(websocket)
         print(f"✅ Connected: {phone}")
+        print(f"[DEBUG] Active connections: {list(self.active_connections.keys())}")
 
-    def disconnect(self, phone: str):
-        self.active_connections.pop(phone, None)
+    def disconnect(self, websocket: WebSocket, phone: str):
+        phone = self.normalize_phone(phone)
+        if phone in self.active_connections:
+            if websocket in self.active_connections[phone]:
+                self.active_connections[phone].remove(websocket)
+            if not self.active_connections[phone]:
+                self.active_connections.pop(phone)
         print(f"❌ Disconnected: {phone}")
+        print(f"[DEBUG] Active connections: {list(self.active_connections.keys())}")
 
-    async def send_session_keys(
-        self,
-        phone1: str,
-        phone2: str,
-        receiver: str,
-        key1: bytes,
-        key2: bytes,
-        timestamp: datetime,
-    ):
-        websocket = self.active_connections.get(receiver)
-        if websocket:
-            await websocket.send_text(json.dumps({
-                "type": "session_key",
-                "phone1": phone1,
-                "phone2": phone2,
-                "receiver": receiver,
-                "key1": key1,
-                "key2": key2,
-                "timestamp": int(timestamp.timestamp() * 1000)  
-            }))
-            print(f"📤 Sent session keys to {receiver}")
-
-    # async def send_personal_message(self, message_type: str, sender: str, receiver: str,
-    #                                 message: str = "", keys: dict | None = None):
-    #     payload = {
-    #         "from": sender,
-    #         "to": receiver,
-    #         "type": message_type,
-    #         "message": message,
-    #         "keys": keys or {},
-    #         "timestamp": datetime.utcnow().isoformat()
-    #     }
-    #     websocket = self.active_connections.get(receiver)
-    #     if websocket:
-    #         await websocket.send_text(json.dumps(payload))
+    async def send_to_phone(self, phone: str, data: dict):
+        """Send data to all active sockets for this phone"""
+        phone = self.normalize_phone(phone)
+        sockets = self.active_connections.get(phone, [])
+        if not sockets:
+            return False
+        payload = json.dumps(data)
+        for ws in sockets:
+            try:
+                await ws.send_text(payload)
+            except Exception as e:
+                print(f"[ERROR] Failed sending WS to {phone}: {e}")
+        return True
 
     async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
-        """
-        Forward an encrypted chat message or other payload to a specific receiver.
-        `payload` already contains 'from', 'to', 'ct', 'iv', 'kpack', etc.
-        """
+        """Send chat or encrypted payload"""
         payload['timestamp'] = datetime.utcnow().isoformat()
+        outer = {"type": message_type, "payload": payload}
+        sent = await self.send_to_phone(receiver, outer)
+        return sent
 
-
-
-        outer = {
-            "type": message_type,
-            "payload": payload
+    async def send_session_keys(
+        self, phone1: str, phone2: str, receiver: str, key1: str, key2: str, timestamp: datetime
+    ):
+        data = {
+            "type": "session_key",
+            "phone1": phone1,
+            "phone2": phone2,
+            "receiver": receiver,
+            "key1": key1,
+            "key2": key2,
+            "timestamp": int(timestamp.timestamp() * 1000),
         }
-
-        websocket = self.active_connections.get(receiver)
-        if websocket:
-            await websocket.send_text(json.dumps(outer))
-
+        await self.send_to_phone(receiver, data)
 
 
 manager = ConnectionManager()
+
 
 
 # ---------------------- SESSION / CHAT HANDLING ------------
@@ -256,10 +319,16 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
         # Send pending messages first
         pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
         for msg in pending:
-            await websocket.send_text(json.dumps({
-                "type": "chat_message",   # same as live messages
-                "payload": json.loads(msg.message)  # reuse stored payload
-            }))
+            try:
+                await websocket.send_text(json.dumps({
+                    "type": "chat_message",   # same as live messages
+                    "payload": json.loads(msg.message)  # reuse stored payload
+                }))
+            except WebSocketDisconnect:
+                print(f"WS disconnected while sending to {phone}")
+            except Exception as e:
+                print(f"Error sending WS message to {phone}: {e}")
+
             db.delete(msg)
         db.commit()
 
@@ -513,9 +582,10 @@ def get_pending_messages(receiver_phone: str, db: Session = Depends(get_db)):
 # ------------------- WEBSOCKET ENDPOINT --------------------
 @app.websocket("/ws/{phone}")
 async def websocket_endpoint(websocket: WebSocket, phone: str):
-    await manager.connect(websocket, phone)
+    
     db = SessionLocal()
     try:
+        await manager.connect(websocket, phone)
         # Deliver pending sessions
         await handle_pending_sessions(db, phone)
         # Handle chat messages
@@ -523,8 +593,13 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
     except WebSocketDisconnect as ee:
         print(f"WS error for {phone}: {ee}")
         manager.disconnect(phone)
+    except Exception as e:
+        print(f"[ERROR] WS error for {phone}: {e}")
+        traceback.print_exc()
     finally:
+        manager.disconnect(websocket, phone)
         db.close()
+
 
 
 # ------------------- ROOT -----------------------------
