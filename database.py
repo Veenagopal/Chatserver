@@ -5,7 +5,13 @@ from sqlalchemy.orm import sessionmaker
 from models import Base
 
 # SQLite database file location
-DATABASE_URL = "sqlite:////data/users_v3.db"
+#DATABASE_URL = "sqlite:////data/users_v3.db"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg2://neondb_owner:npg_vjxLQFyk89fD@ep-super-glitter-adzibbu2-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+)
+
+
 
 # SQLAlchemy engine & session
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
