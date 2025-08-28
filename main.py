@@ -361,7 +361,7 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
 
             except WebSocketDisconnect as ii:
                 print(f"WS disconnected for {phone}: {ii}")
-                manager.disconnect(phone)
+                manager.disconnect(websocket,phone)
                 break
             except Exception as e:
                 print(f"Error handling message from {phone}: {e}")
@@ -592,7 +592,7 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
         await handle_chat_messages(db, websocket, phone)
     except WebSocketDisconnect as ee:
         print(f"WS error for {phone}: {ee}")
-        manager.disconnect(phone)
+        manager.disconnect(websocket, phone)
     except Exception as e:
         print(f"[ERROR] WS error for {phone}: {e}")
         traceback.print_exc()
