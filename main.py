@@ -229,12 +229,8 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
         pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
         for msg in pending:
             await websocket.send_text(json.dumps({
-                "from": msg.sender_phone,
-                "to": phone,
-                "type": "pending_message",
-                "message": msg.message,
-                "keys": {},  # can be replaced with actual keys if needed
-                "timestamp": msg.timestamp.isoformat()
+                "type": "chat_message",   # same as live messages
+                "payload": json.loads(msg.payload)  # reuse stored payload
             }))
             db.delete(msg)
         db.commit()
