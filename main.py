@@ -222,6 +222,13 @@ async def handle_pending_sessions(db: Session, phone: str):
 
     db.commit()
 
+@app.get("/debug/pending")
+def get_all_pending(db: Session = Depends(get_db)):
+    rows = db.query(PendingMessage).all()
+    return [
+        {"id": r.id, "to": r.receiver_phone, "payload": r.payload, "created": r.created_at}
+        for r in rows
+    ]
 
 async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
     try:
