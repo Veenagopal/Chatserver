@@ -226,7 +226,7 @@ async def handle_pending_sessions(db: Session, phone: str):
 def get_all_pending(db: Session = Depends(get_db)):
     rows = db.query(PendingMessage).all()
     return [
-        {"id": r.id, "to": r.receiver_phone, "payload": r.message, "created": r.created_at}
+        {"id": r.id, "to": r.receiver_phone, "payload": r.message, "created": r.timestamp}
         for r in rows
     ]
 
@@ -237,7 +237,7 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
         for msg in pending:
             await websocket.send_text(json.dumps({
                 "type": "chat_message",   # same as live messages
-                "payload": json.loads(msg.payload)  # reuse stored payload
+                "payload": json.loads(msg.message)  # reuse stored payload
             }))
             db.delete(msg)
         db.commit()
