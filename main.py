@@ -50,6 +50,12 @@ def startup_event():
 
     Base.metadata.create_all(bind=engine)
     print("[INFO] Database tables created/verified.")
+        # 🔍 Check what SQLite is really connected to
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA database_list;"))
+        for row in result.fetchall():
+            print(f"[DEBUG] Connected DB: {row}")
+
 
 
 def get_db():
