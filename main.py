@@ -25,6 +25,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 app = FastAPI()
 
 # ----------------------- DATABASE SETUP ---------------------
+@app.get("/list-data")
+def list_data():
+    return {"files": os.listdir("/data")}
+
 @app.on_event("startup")
 def startup_event():
     global engine
