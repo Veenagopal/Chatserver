@@ -418,7 +418,17 @@ async def generate_session_keys_test(
             print("✅ Existing session found")
         else:
             # Generate 32-byte session key
-            key_bytes = (123).to_bytes(1, "big").rjust(32, b'\x00')
+            #key_bytes = (123).to_bytes(1, "big").rjust(32, b'\x00')
+            with torch.no_grad():
+                cfg = get_config()
+                z = torch.randn(1, cfg["channels"], cfg["length"])
+                output = generator_model(z)
+                probs = torch.sigmoid(output)
+                bits = (probs > 0.5).int().cpu().numpy().flatten()[:256]
+                byte_array = np.packbits(bits)
+                key_bytes = byte_array.tobytes()   # 256-bit session key
+                print(key_bytes.hex())
+
 
             # Load public keys from DB
             raw_sender = db.query(User.publickey).filter(User.phone == sender).scalar()
