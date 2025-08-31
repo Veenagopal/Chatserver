@@ -428,6 +428,9 @@ async def generate_session_keys_test(
                 byte_array = np.packbits(bits)
                 key_bytes = byte_array.tobytes()   # 256-bit session key
                 print(key_bytes.hex())
+                print("KEY", "Session Key length (bytes): " + key_bytes.length)
+                print("KEY", "Session Key length (bits): " + (key_bytes.length * 8))
+                
 
 
             # Load public keys from DB
