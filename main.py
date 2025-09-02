@@ -408,9 +408,10 @@ async def generate_session_keys_test(
 
         # Check for existing session
         existing = db.query(SessionKey).filter(
-            SessionKey.phone1 == phone1,
-            SessionKey.phone2 == phone2
+            ((SessionKey.phone1 == sender) & (SessionKey.phone2 == receiver)) |
+            ((SessionKey.phone1 == receiver) & (SessionKey.phone2 == sender))
         ).first()
+
 
         if existing:
             key1, key2 = existing.key1, existing.key2
