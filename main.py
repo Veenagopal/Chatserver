@@ -553,7 +553,7 @@ async def generate_session_keys_test(
     try:
         sender = manager.normalize_phone(sender)
         receiver = manager.normalize_phone(receiver)
-        phone1, phone2 = sorted([sender, receiver])
+       
 
         phone1, phone2 = sorted([sender, receiver])
 
