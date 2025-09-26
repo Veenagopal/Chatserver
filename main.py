@@ -259,6 +259,37 @@ class ConnectionManager:
     #         except Exception as e:
     #             print(f"[ERROR] Failed sending WS to {phone}: {e}")
     #     return True
+    # async def send_to_phone(self, phone: str, data: dict):
+    #     phone = self.normalize_phone(phone)
+    #     sockets = self.active_connections.get(phone, [])
+    #     if not sockets:
+    #         return False
+
+    #     payload = json.dumps(data)
+    #     any_success = False
+    #     dead = []
+
+    #     for ws in list(sockets):
+    #         try:
+    #             await ws.send_text(payload)
+    #             any_success = True
+    #         except Exception as e:
+    #             print(f"[ERROR] Failed sending WS to {phone}: {e}")
+    #             dead.append(ws)
+
+    #     # prune dead sockets
+    #     for ws in dead:
+    #         try:
+    #             sockets.remove(ws)
+    #         except ValueError:
+    #             pass
+    #     if not sockets:
+    #         self.active_connections.pop(phone, None)
+
+    #     return any_success
+
+    from starlette.websockets import WebSocketState
+
     async def send_to_phone(self, phone: str, data: dict):
         phone = self.normalize_phone(phone)
         sockets = self.active_connections.get(phone, [])
@@ -270,14 +301,23 @@ class ConnectionManager:
         dead = []
 
         for ws in list(sockets):
+            # If already disconnected, mark dead
+            try:
+                if ws.client_state != WebSocketState.CONNECTED:
+                    dead.append(ws)
+                    continue
+            except Exception:
+                dead.append(ws)
+                continue
+
             try:
                 await ws.send_text(payload)
                 any_success = True
             except Exception as e:
-                print(f"[ERROR] Failed sending WS to {phone}: {e}")
+                print(f"[WS][ERROR] send failed to {phone}: {e}")
                 dead.append(ws)
 
-        # prune dead sockets
+        # Prune dead sockets immediately so we don't mis-detect online next time
         for ws in dead:
             try:
                 sockets.remove(ws)
@@ -286,6 +326,8 @@ class ConnectionManager:
         if not sockets:
             self.active_connections.pop(phone, None)
 
+        print(f"[WS][SEND_TO] phone={phone} success={any_success} "
+            f"remaining={len(self.active_connections.get(phone, []))}")
         return any_success
 
 
@@ -476,6 +518,7 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                 if obj.get("type") == "chat_message":
                     payload = obj.get("payload", {}) or {}
                     receiver_phone = manager.normalize_phone(payload.get("to", ""))
+                    print(payload )
 
                     # Try to deliver via the connection manager (don’t peek into active_connections)
                     sent = await manager.send_personal_message(
