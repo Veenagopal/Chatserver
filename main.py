@@ -4,6 +4,9 @@ import sqlite3
 import torch
 import numpy as np
 import traceback
+import asyncio
+KEEPALIVE_SECONDS = 45
+
 from datetime import datetime
 from typing import Dict, List
 import json
@@ -243,19 +246,48 @@ class ConnectionManager:
         print(f"❌ Disconnected: {phone}")
         print(f"[DEBUG] Active connections: {list(self.active_connections.keys())}")
 
+    # async def send_to_phone(self, phone: str, data: dict):
+    #     """Send data to all active sockets for this phone"""
+    #     phone = self.normalize_phone(phone)
+    #     sockets = self.active_connections.get(phone, [])
+    #     if not sockets:
+    #         return False
+    #     payload = json.dumps(data)
+    #     for ws in sockets:
+    #         try:
+    #             await ws.send_text(payload)
+    #         except Exception as e:
+    #             print(f"[ERROR] Failed sending WS to {phone}: {e}")
+    #     return True
     async def send_to_phone(self, phone: str, data: dict):
-        """Send data to all active sockets for this phone"""
         phone = self.normalize_phone(phone)
         sockets = self.active_connections.get(phone, [])
         if not sockets:
             return False
+
         payload = json.dumps(data)
-        for ws in sockets:
+        any_success = False
+        dead = []
+
+        for ws in list(sockets):
             try:
                 await ws.send_text(payload)
+                any_success = True
             except Exception as e:
                 print(f"[ERROR] Failed sending WS to {phone}: {e}")
-        return True
+                dead.append(ws)
+
+        # prune dead sockets
+        for ws in dead:
+            try:
+                sockets.remove(ws)
+            except ValueError:
+                pass
+        if not sockets:
+            self.active_connections.pop(phone, None)
+
+        return any_success
+
 
     async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
         """Send chat or encrypted payload"""
@@ -284,9 +316,31 @@ manager = ConnectionManager()
 
 
 # ---------------------- SESSION / CHAT HANDLING ------------
+# async def handle_pending_sessions(db: Session, phone: str):
+#     pending = db.query(PendingSession).filter(
+#         (PendingSession.phone1 == phone) | (PendingSession.phone2 == phone)
+#     ).all()
+
+#     for ps in pending:
+#         try:
+#             await manager.send_session_keys(
+#                 phone1=ps.phone1,
+#                 phone2=ps.phone2,
+#                 receiver=phone,
+#                 key1=ps.key1,
+#                 key2=ps.key2,
+#                 timestamp=ps.created_at
+#             )
+#         except Exception as e:
+#             print(f" Failed sending keys to {phone}: {e}")
+#         finally:
+#             db.delete(ps)
+
+#     db.commit()
 async def handle_pending_sessions(db: Session, phone: str):
+    phone = manager.normalize_phone(phone)
     pending = db.query(PendingSession).filter(
-        (PendingSession.phone1 == phone) | (PendingSession.phone2 == phone)
+        PendingSession.receiver_phone == phone
     ).all()
 
     for ps in pending:
@@ -300,11 +354,11 @@ async def handle_pending_sessions(db: Session, phone: str):
                 timestamp=ps.created_at
             )
         except Exception as e:
-            print(f" Failed sending keys to {phone}: {e}")
+            print(f"Failed sending keys to {phone}: {e}")
         finally:
             db.delete(ps)
-
     db.commit()
+
 
 @app.get("/debug/pending")
 def get_all_pending(db: Session = Depends(get_db)):
@@ -314,10 +368,72 @@ def get_all_pending(db: Session = Depends(get_db)):
         for r in rows
     ]
 
+# async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
+#     try:
+#         # Send pending messages first
+#         pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
+#         for msg in pending:
+#             try:
+#                 await websocket.send_text(json.dumps({
+#                     "type": "chat_message",   # same as live messages
+#                     "payload": json.loads(msg.message)  # reuse stored payload
+#                 }))
+#             except WebSocketDisconnect:
+#                 print(f"WS disconnected while sending to {phone}")
+#             except Exception as e:
+#                 print(f"Error sending WS message to {phone}: {e}")
+
+#             db.delete(msg)
+#         db.commit()
+
+#         # Handle new incoming messages
+#         while True:
+#             try:
+#                 data = await websocket.receive_text()
+#                 obj = json.loads(data)
+
+#                 if obj.get("type") == "chat_message":
+#                     payload = obj.get("payload", {})
+#                     receiver_phone = payload.get("to")
+#                     if receiver_phone in manager.active_connections:
+#                         # Forward entire payload with sender info
+#                         await manager.send_personal_message(
+#                             "chat_message",
+#                             receiver=receiver_phone,
+#                             payload=payload  # full encrypted payload
+#                         )
+#                     else:
+#                         # Store full payload for offline delivery
+#                         print("Receiver "+phone+" is offline storing in PendingMessage table")
+#                         db.add(PendingMessage(
+#                             sender_phone=phone,
+#                             receiver_phone=receiver_phone,
+#                             message=json.dumps(payload),
+#                             timestamp=datetime.utcnow()
+#                         ))
+#                         db.commit()
+
+#             except WebSocketDisconnect as ii:
+#                 print(f"WS disconnected for {phone}: {ii}")
+#                 manager.disconnect(websocket,phone)
+#                 break
+#             except Exception as e:
+#                 print(f"Error handling message from {phone}: {e}")
+#                 traceback.print_exc()
+
+#     except Exception as outer_e:
+#         print(f"Error in handle_chat_messages for {phone}: {outer_e}")
+#         traceback.print_exc()
+
 async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
     try:
-        # Send pending messages first
-        pending = db.query(PendingMessage).filter(PendingMessage.receiver_phone == phone).all()
+        # Normalize once so DB lookups & maps match consistently
+        phone = manager.normalize_phone(phone)
+
+        # 1) Send pending messages first (unchanged logic, but normalized phone)
+        pending = db.query(PendingMessage).filter(
+            PendingMessage.receiver_phone == phone
+        ).all()
         for msg in pending:
             try:
                 await websocket.send_text(json.dumps({
@@ -332,25 +448,45 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
             db.delete(msg)
         db.commit()
 
-        # Handle new incoming messages
+        # 2) Handle new incoming messages with heartbeat + idle-timeout
         while True:
             try:
-                data = await websocket.receive_text()
-                obj = json.loads(data)
+                # Idle-timeout: if nothing arrives for KEEPALIVE_SECONDS, send keepalive
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=KEEPALIVE_SECONDS)
+                # --- sanitize / ignore heartbeats or junk frames ---
+                if not data or not data.strip():
+                    # empty text frame — ignore
+                    continue
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    # not JSON — ignore
+                    continue
+                msg_type = (obj.get("type") or "").lower()
+                if msg_type in ("keepalive", "ping", "pong", "heartbeat"):
+                    # optional: reply to ping with pong
+                    if msg_type == "ping":
+                        try:
+                            await websocket.send_text(json.dumps({"type": "pong"}))
+                        except Exception:
+                            pass
+                    # ignore heartbeats
+                    continue
 
                 if obj.get("type") == "chat_message":
-                    payload = obj.get("payload", {})
-                    receiver_phone = payload.get("to")
-                    if receiver_phone in manager.active_connections:
-                        # Forward entire payload with sender info
-                        await manager.send_personal_message(
-                            "chat_message",
-                            receiver=receiver_phone,
-                            payload=payload  # full encrypted payload
-                        )
-                    else:
+                    payload = obj.get("payload", {}) or {}
+                    receiver_phone = manager.normalize_phone(payload.get("to", ""))
+
+                    # Try to deliver via the connection manager (don’t peek into active_connections)
+                    sent = await manager.send_personal_message(
+                        "chat_message",
+                        receiver=receiver_phone,
+                        payload=payload  # full encrypted payload
+                    )
+
+                    if not sent:
                         # Store full payload for offline delivery
-                        print("Receiver "+phone+" is offline storing in PendingMessage table")
+                        print(f"Receiver {receiver_phone} is offline; storing in PendingMessage table")
                         db.add(PendingMessage(
                             sender_phone=phone,
                             receiver_phone=receiver_phone,
@@ -359,10 +495,22 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                         ))
                         db.commit()
 
+            except asyncio.TimeoutError:
+                # No traffic for KEEPALIVE_SECONDS → keep the socket warm for NAT/proxies
+                try:
+                    await websocket.send_text(json.dumps({"type": "keepalive"}))
+                except WebSocketDisconnect as ii:
+                    print(f"WS keepalive failed for {phone}: {ii}")
+                    manager.disconnect(websocket, phone)
+                    break
+                except Exception as e:
+                    print(f"Error sending keepalive to {phone}: {e}")
+
             except WebSocketDisconnect as ii:
                 print(f"WS disconnected for {phone}: {ii}")
-                manager.disconnect(websocket,phone)
+                manager.disconnect(websocket, phone)
                 break
+
             except Exception as e:
                 print(f"Error handling message from {phone}: {e}")
                 traceback.print_exc()
@@ -370,7 +518,6 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
     except Exception as outer_e:
         print(f"Error in handle_chat_messages for {phone}: {outer_e}")
         traceback.print_exc()
-
 
 # ------------------- ENDPOINTS -----------------------------
 # @app.get("/where-is-db")
@@ -404,6 +551,10 @@ async def generate_session_keys_test(
 ):
     print(f"🔑 Session key request: sender={sender}, receiver={receiver}")
     try:
+        sender = manager.normalize_phone(sender)
+        receiver = manager.normalize_phone(receiver)
+        phone1, phone2 = sorted([sender, receiver])
+
         phone1, phone2 = sorted([sender, receiver])
 
         # Check for existing session
@@ -488,11 +639,18 @@ async def generate_session_keys_test(
 
         # Deliver keys
         for user in [sender, receiver]:
-            if user in manager.active_connections:
-                await manager.send_session_keys(sender, receiver, user, key1, key2, timestamp)
-            else:
+            delivered = await manager.send_to_phone(user, {
+                "type": "session_key",
+                "phone1": sender,
+                "phone2": receiver,
+                "receiver": user,
+                "key1": key1,
+                "key2": key2,
+                "timestamp": int(timestamp.timestamp() * 1000),
+            })
+            if not delivered:
                 db.add(PendingSession(
-                    receiver_phone=user,
+                    receiver_phone=manager.normalize_phone(user),
                     phone1=sender,
                     phone2=receiver,
                     key1=key1,
@@ -500,6 +658,7 @@ async def generate_session_keys_test(
                     created_at=timestamp
                 ))
         db.commit()
+
         return {"type": "success"}
 
     except Exception as e:
@@ -603,20 +762,22 @@ def get_pending_messages(receiver_phone: str, db: Session = Depends(get_db)):
 async def websocket_endpoint(websocket: WebSocket, phone: str):
     
     db = SessionLocal()
+    phone_norm = manager.normalize_phone(phone)
+    
     try:
-        await manager.connect(websocket, phone)
+        await manager.connect(websocket, phone_norm)
         # Deliver pending sessions
-        await handle_pending_sessions(db, phone)
+        await handle_pending_sessions(db, phone_norm)
         # Handle chat messages
-        await handle_chat_messages(db, websocket, phone)
+        await handle_chat_messages(db, websocket, phone_norm)
     except WebSocketDisconnect as ee:
-        print(f"WS error for {phone}: {ee}")
-        manager.disconnect(websocket, phone)
+        print(f"WS error for {phone_norm}: {ee}")
+        manager.disconnect(websocket, phone_norm)
     except Exception as e:
-        print(f"[ERROR] WS error for {phone}: {e}")
+        print(f"[ERROR] WS error for {phone_norm}: {e}")
         traceback.print_exc()
     finally:
-        manager.disconnect(websocket, phone)
+        manager.disconnect(websocket, phone_norm)
         db.close()
 
 
