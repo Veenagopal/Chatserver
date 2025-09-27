@@ -5,7 +5,11 @@ import torch
 import numpy as np
 import traceback
 import asyncio
+import re
+from starlette.websockets import WebSocketState
+
 KEEPALIVE_SECONDS = 45
+
 
 from datetime import datetime
 from typing import Dict, List
@@ -64,13 +68,24 @@ def list_data():
 #         for row in result.fetchall():
 #             print(f"[DEBUG] Connected DB: {row}")
 
-@app.on_event("startup")
-def startup_event():
-    Base.metadata.create_all(bind=engine)
-    print("[INFO] Database tables created/verified.")
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT current_database(), current_user;"))
-        print(f"[DEBUG] Connected to DB: {result.fetchone()}")
+def normalize_phone(phone: str) -> str:
+    if not phone:
+        return ""
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        digits = "91" + digits
+    return digits
+
+
+# @app.on_event("startup")
+# def startup_event():
+#     Base.metadata.create_all(bind=engine)
+#     print("[INFO] Database tables created/verified.")
+#     with engine.connect() as conn:
+#         result = conn.execute(text("SELECT current_database(), current_user;"))
+#         print(f"[DEBUG] Connected to DB: {result.fetchone()}")
 
 
 def get_db():
@@ -92,9 +107,30 @@ app.add_middleware(
 
 # ------------------- MODEL LOADING --------------------------
 generator_model = None
-
 @app.on_event("startup")
-def load_model_on_startup():
+def on_startup():
+    # 1) Ensure tables
+    Base.metadata.create_all(bind=engine)
+    print("[INFO] Database tables created/verified.")
+
+    # 2) Safe DB probe per backend
+    try:
+        backend = engine.url.get_backend_name()
+    except Exception:
+        backend = "unknown"
+
+    try:
+        with engine.connect() as conn:
+            if backend in ("postgresql", "postgres"):
+                row = conn.execute(text("SELECT current_database(), current_user;")).fetchone()
+                print(f"[DEBUG] Connected to DB: {row}")
+            else:
+                row = conn.execute(text("PRAGMA database_list;")).fetchall()
+                print(f"[DEBUG] SQLite PRAGMA database_list: {row}")
+    except Exception as e:
+        print(f"[WARN] DB probe skipped: {e}")
+
+    # 3) Load model once
     global generator_model
     cfg = get_config()
     generator_model = NCAGenerator(
@@ -107,6 +143,22 @@ def load_model_on_startup():
     generator_model.load_state_dict(torch.load("best_generator_g2.pt", map_location="cpu"))
     generator_model.eval()
     print("✅ Model loaded")
+
+
+# @app.on_event("startup")
+# def load_model_on_startup():
+#     global generator_model
+#     cfg = get_config()
+#     generator_model = NCAGenerator(
+#         channels=cfg["channels"],
+#         hidden=cfg["hidden"],
+#         steps=cfg["steps"],
+#         dropout=cfg["dropout"],
+#         length=cfg["length"]
+#     )
+#     generator_model.load_state_dict(torch.load("best_generator_g2.pt", map_location="cpu"))
+#     generator_model.eval()
+#     print("✅ Model loaded")
 
 
 # ---------------------- HELPERS ----------------------------
@@ -224,8 +276,11 @@ class ConnectionManager:
         # Each phone can have multiple WebSocket connections
         self.active_connections: Dict[str, List[WebSocket]] = {}
 
+    # 2) replace the existing normalize_phone() inside ConnectionManager with this:
+
     def normalize_phone(self, phone: str) -> str:
-        return phone.strip().replace(" ", "").replace("-", "")
+        return normalize_phone(phone)
+
 
     async def connect(self, websocket: WebSocket, phone: str):
         await websocket.accept()
@@ -288,7 +343,7 @@ class ConnectionManager:
 
     #     return any_success
 
-    from starlette.websockets import WebSocketState
+    
 
     async def send_to_phone(self, phone: str, data: dict):
         phone = self.normalize_phone(phone)
@@ -518,7 +573,7 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                 if obj.get("type") == "chat_message":
                     payload = obj.get("payload", {}) or {}
                     receiver_phone = manager.normalize_phone(payload.get("to", ""))
-                    print(payload )
+                    #print(payload )
 
                     # Try to deliver via the connection manager (don’t peek into active_connections)
                     sent = await manager.send_personal_message(
@@ -600,10 +655,14 @@ async def generate_session_keys_test(
 
         phone1, phone2 = sorted([sender, receiver])
 
-        # Check for existing session
+        # # Check for existing session
+        # existing = db.query(SessionKey).filter(
+        #     ((SessionKey.phone1 == sender) & (SessionKey.phone2 == receiver)) |
+        #     ((SessionKey.phone1 == receiver) & (SessionKey.phone2 == sender))
+        # ).first()
+        # Find existing by sorted order
         existing = db.query(SessionKey).filter(
-            ((SessionKey.phone1 == sender) & (SessionKey.phone2 == receiver)) |
-            ((SessionKey.phone1 == receiver) & (SessionKey.phone2 == sender))
+            (SessionKey.phone1 == phone1) & (SessionKey.phone2 == phone2)
         ).first()
 
 
@@ -670,8 +729,8 @@ async def generate_session_keys_test(
             # Store session in DB
             timestamp = datetime.utcnow()
             db.add(SessionKey(
-                phone1=sender,
-                phone2=receiver,
+                phone1=phone1,
+                phone2=phone2,
                 key1=enc_for_sender_b64,
                 key2=enc_for_receiver_b64,
                 created_at=timestamp
@@ -684,8 +743,8 @@ async def generate_session_keys_test(
         for user in [sender, receiver]:
             delivered = await manager.send_to_phone(user, {
                 "type": "session_key",
-                "phone1": sender,
-                "phone2": receiver,
+                "phone1": phone1,
+                "phone2": phone2,
                 "receiver": user,
                 "key1": key1,
                 "key2": key2,
@@ -694,8 +753,8 @@ async def generate_session_keys_test(
             if not delivered:
                 db.add(PendingSession(
                     receiver_phone=manager.normalize_phone(user),
-                    phone1=sender,
-                    phone2=receiver,
+                    phone1=phone1,
+                    phone2=phone2,
                     key1=key1,
                     key2=key2,
                     created_at=timestamp
@@ -727,8 +786,11 @@ def generate_random():
 
 @app.post("/register-user")
 def register_user(request: RegisterUserRequest, db: Session = Depends(get_db)):
+    phone_norm = normalize_phone(request.phone)
+
     # Check if user already exists
-    user = db.query(User).filter(User.phone == request.phone).first()
+
+    user = db.query(User).filter(User.phone == phone_norm).first()
     if user:
         return {"type": "exists", "payload": {}}
 
@@ -746,14 +808,16 @@ def register_user(request: RegisterUserRequest, db: Session = Depends(get_db)):
     pub_b64 = base64.b64encode(pub_bytes).decode("ascii")
 
     # Store user with DER Base64 public key
-    db.add(User(phone=request.phone, name=request.name, publickey=pub_b64))
+    db.add(User(phone=phone_norm, name=request.name, publickey=pub_b64))
     db.commit()
 
     return {"type": "registered", "payload": {}}
 
 @app.post("/delete-user")
 def delete_user(request: DeleteUserRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.phone == request.phone).first()
+    phone_norm = normalize_phone(request.phone)
+
+    user = db.query(User).filter(User.phone == phone_norm).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     db.delete(user)
@@ -769,7 +833,9 @@ def list_users(db: Session = Depends(get_db)):
 
 @app.get("/get-user")
 def get_user(phone: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.phone == phone).first()
+    phone_norm = normalize_phone(phone)
+
+    user = db.query(User).filter(User.phone == phone_norm).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return {"type": "get_user", "payload": {"name": user.name, "phone": user.phone}}
@@ -777,13 +843,17 @@ def get_user(phone: str, db: Session = Depends(get_db)):
 
 @app.get("/search-users")
 def search_users(query: str, exclude_phone: str, db: Session = Depends(get_db)):
-    results = db.query(User).filter(User.name.ilike(f"%{query}%"), User.phone != exclude_phone).all()
+    exclude_norm = normalize_phone(exclude_phone)
+
+    results = db.query(User).filter(User.name.ilike(f"%{query}%"), User.phone != exclude_norm).all()
     return {"type": "search_users", "payload": [{"phone": u.phone, "name": u.name} for u in results]}
 
 
 @app.get("/resolve-users")
 def resolve_users(phones: List[str] = Query(...), db: Session = Depends(get_db)):
-    users = db.query(User).filter(User.phone.in_(phones)).all()
+    normed = [normalize_phone(p) for p in phones]
+
+    users = db.query(User).filter(User.phone.in_(normed)).all()
     return {"type": "resolve_users", "payload": [{"name": u.name, "phone": u.phone} for u in users]}
 
 
@@ -796,7 +866,9 @@ def clear_pending_messages(db: Session = Depends(get_db)):
 
 @app.get("/debug-pending/{receiver_phone}")
 def get_pending_messages(receiver_phone: str, db: Session = Depends(get_db)):
-    messages = db.query(PendingMessage).filter(PendingMessage.receiver_phone == receiver_phone).all()
+    r = normalize_phone(receiver_phone)
+
+    messages = db.query(PendingMessage).filter(PendingMessage.receiver_phone == r).all()
     return {"type": "pending_messages", "payload": [{"from": m.sender_phone, "message": m.message, "timestamp": m.timestamp.isoformat()} for m in messages]}
 
 
@@ -815,12 +887,15 @@ async def websocket_endpoint(websocket: WebSocket, phone: str):
         await handle_chat_messages(db, websocket, phone_norm)
     except WebSocketDisconnect as ee:
         print(f"WS error for {phone_norm}: {ee}")
-        manager.disconnect(websocket, phone_norm)
+    #    manager.disconnect(websocket, phone_norm)
     except Exception as e:
         print(f"[ERROR] WS error for {phone_norm}: {e}")
         traceback.print_exc()
     finally:
-        manager.disconnect(websocket, phone_norm)
+        try:
+            manager.disconnect(websocket, phone_norm)
+        except Exception:
+            pass
         db.close()
 
 
