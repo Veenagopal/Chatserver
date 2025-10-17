@@ -865,6 +865,18 @@ async def generate_session_keys_test(
             # Base64-encode for transport
             enc_for_sender_b64 = base64.b64encode(enc_for_sender).decode("ascii")
             enc_for_receiver_b64 = base64.b64encode(enc_for_receiver).decode("ascii")
+            enc_map = {
+                sender: enc_for_sender_b64,
+                receiver: enc_for_receiver_b64
+            }
+            enc_phone1 = enc_map.get(phone1)
+            enc_phone2 = enc_map.get(phone2)
+
+            # Defensive: if mapping fails (shouldn't), fall back to the direct values
+            if enc_phone1 is None or enc_phone2 is None:
+                enc_phone1 = enc_for_sender_b64 if phone1 == sender else enc_for_receiver_b64
+                enc_phone2 = enc_for_sender_b64 if phone2 == sender else enc_for_receiver_b64
+
 
             # Store session in DB
             timestamp = datetime.utcnow()
