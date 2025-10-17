@@ -270,132 +270,135 @@ class DeleteUserRequest(BaseModel):
 #         if websocket:
 #             await websocket.send_text(json.dumps(outer))
 
-
+# ----------------- REPLACE ConnectionManager WITH THIS -----------------
 class ConnectionManager:
     def __init__(self):
-        # Each phone can have multiple WebSocket connections
+        # phone -> list[WebSocket]
         self.active_connections: Dict[str, List[WebSocket]] = {}
-
-    # 2) replace the existing normalize_phone() inside ConnectionManager with this:
+        # weak reverse mapping: websocket id -> phone
+        self.socket_to_phone: Dict[int, str] = {}
 
     def normalize_phone(self, phone: str) -> str:
         return normalize_phone(phone)
 
-
     async def connect(self, websocket: WebSocket, phone: str):
         await websocket.accept()
         phone = self.normalize_phone(phone)
+
+        wid = id(websocket)
+        # Defensive: if this socket already present (rare), avoid duplicate add
+        if wid in self.socket_to_phone:
+            existing = self.socket_to_phone[wid]
+            if existing == phone:
+                # Already registered correctly
+                return
+            else:
+                # Clean old registration if any
+                self._remove_socket_by_id(wid)
+
         if phone not in self.active_connections:
             self.active_connections[phone] = []
         self.active_connections[phone].append(websocket)
+        self.socket_to_phone[wid] = phone
+
         print(f"✅ Connected: {phone}")
         print(f"[DEBUG] Active connections: {list(self.active_connections.keys())}")
 
-    def disconnect(self, websocket: WebSocket, phone: str):
-        phone = self.normalize_phone(phone)
-        if phone in self.active_connections:
-            if websocket in self.active_connections[phone]:
-                self.active_connections[phone].remove(websocket)
-            if not self.active_connections[phone]:
-                self.active_connections.pop(phone)
-        print(f"❌ Disconnected: {phone}")
-        print(f"[DEBUG] Active connections: {list(self.active_connections.keys())}")
+    def _remove_socket_by_id(self, wid: int) -> bool:
+        """Internal helper to remove a socket by its id. Returns True if removed."""
+        phone = self.socket_to_phone.pop(wid, None)
+        if not phone:
+            return False
+        sockets = self.active_connections.get(phone, [])
+        # remove the socket object(s) whose id matches wid (safe even if websocket differs)
+        removed = False
+        for ws in list(sockets):
+            if id(ws) == wid:
+                try:
+                    sockets.remove(ws)
+                except ValueError:
+                    pass
+                removed = True
+        if not sockets:
+            # no more sockets for phone -> drop entry
+            self.active_connections.pop(phone, None)
+        return removed
 
-    # async def send_to_phone(self, phone: str, data: dict):
-    #     """Send data to all active sockets for this phone"""
-    #     phone = self.normalize_phone(phone)
-    #     sockets = self.active_connections.get(phone, [])
-    #     if not sockets:
-    #         return False
-    #     payload = json.dumps(data)
-    #     for ws in sockets:
-    #         try:
-    #             await ws.send_text(payload)
-    #         except Exception as e:
-    #             print(f"[ERROR] Failed sending WS to {phone}: {e}")
-    #     return True
-    # async def send_to_phone(self, phone: str, data: dict):
-    #     phone = self.normalize_phone(phone)
-    #     sockets = self.active_connections.get(phone, [])
-    #     if not sockets:
-    #         return False
+    def disconnect(self, websocket: WebSocket, phone: str | None = None) -> bool:
+        """
+        Remove the websocket from tracking.
+        Returns True if a socket was actually removed (so caller may log).
+        """
+        wid = id(websocket)
+        # Prefer removing by socket id (more robust than by equality of WebSocket object)
+        removed = self._remove_socket_by_id(wid)
+        # As a fallback, if phone provided, try to remove by direct lookup
+        if not removed and phone:
+            phone = self.normalize_phone(phone)
+            sockets = self.active_connections.get(phone, [])
+            try:
+                if websocket in sockets:
+                    sockets.remove(websocket)
+                    removed = True
+            except Exception:
+                pass
+            if sockets == []:
+                self.active_connections.pop(phone, None)
+        return removed
 
-    #     payload = json.dumps(data)
-    #     any_success = False
-    #     dead = []
-
-    #     for ws in list(sockets):
-    #         try:
-    #             await ws.send_text(payload)
-    #             any_success = True
-    #         except Exception as e:
-    #             print(f"[ERROR] Failed sending WS to {phone}: {e}")
-    #             dead.append(ws)
-
-    #     # prune dead sockets
-    #     for ws in dead:
-    #         try:
-    #             sockets.remove(ws)
-    #         except ValueError:
-    #             pass
-    #     if not sockets:
-    #         self.active_connections.pop(phone, None)
-
-    #     return any_success
-
-    
+    def prune_dead_sockets(self):
+        """Synchronous prune (used rarely). Remove any sockets not connected."""
+        dead = []
+        for phone, sockets in list(self.active_connections.items()):
+            for ws in list(sockets):
+                try:
+                    if ws.client_state != WebSocketState.CONNECTED:
+                        dead.append(id(ws))
+                except Exception:
+                    dead.append(id(ws))
+        for wid in dead:
+            self._remove_socket_by_id(wid)
 
     async def send_to_phone(self, phone: str, data: dict):
         phone = self.normalize_phone(phone)
         sockets = self.active_connections.get(phone, [])
         if not sockets:
+            print(f"[WS][SEND_TO] phone={phone} no sockets")
             return False
 
         payload = json.dumps(data)
         any_success = False
-        dead = []
+        dead_wids = []
 
         for ws in list(sockets):
-            # If already disconnected, mark dead
             try:
                 if ws.client_state != WebSocketState.CONNECTED:
-                    dead.append(ws)
+                    dead_wids.append(id(ws))
                     continue
             except Exception:
-                dead.append(ws)
+                dead_wids.append(id(ws))
                 continue
-
             try:
                 await ws.send_text(payload)
                 any_success = True
             except Exception as e:
                 print(f"[WS][ERROR] send failed to {phone}: {e}")
-                dead.append(ws)
+                dead_wids.append(id(ws))
 
-        # Prune dead sockets immediately so we don't mis-detect online next time
-        for ws in dead:
-            try:
-                sockets.remove(ws)
-            except ValueError:
-                pass
-        if not sockets:
-            self.active_connections.pop(phone, None)
+        # prune dead sockets
+        for wid in dead_wids:
+            self._remove_socket_by_id(wid)
 
-        print(f"[WS][SEND_TO] phone={phone} success={any_success} "
-            f"remaining={len(self.active_connections.get(phone, []))}")
+        remaining = len(self.active_connections.get(phone, []))
+        print(f"[WS][SEND_TO] phone={phone} success={any_success} remaining={remaining}")
         return any_success
 
-
     async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
-        """Send chat or encrypted payload"""
         payload['timestamp'] = datetime.utcnow().isoformat()
         outer = {"type": message_type, "payload": payload}
-        sent = await self.send_to_phone(receiver, outer)
-        return sent
+        return await self.send_to_phone(receiver, outer)
 
-    async def send_session_keys(
-        self, phone1: str, phone2: str, receiver: str, key1: str, key2: str, timestamp: datetime
-    ):
+    async def send_session_keys(self, phone1: str, phone2: str, receiver: str, key1: str, key2: str, timestamp: datetime):
         data = {
             "type": "session_key",
             "phone1": phone1,
@@ -406,6 +409,143 @@ class ConnectionManager:
             "timestamp": int(timestamp.timestamp() * 1000),
         }
         await self.send_to_phone(receiver, data)
+# ----------------- END ConnectionManager -----------------
+
+# class ConnectionManager:
+#     def __init__(self):
+#         # Each phone can have multiple WebSocket connections
+#         self.active_connections: Dict[str, List[WebSocket]] = {}
+
+#     # 2) replace the existing normalize_phone() inside ConnectionManager with this:
+
+#     def normalize_phone(self, phone: str) -> str:
+#         return normalize_phone(phone)
+
+
+#     async def connect(self, websocket: WebSocket, phone: str):
+#         await websocket.accept()
+#         phone = self.normalize_phone(phone)
+#         if phone not in self.active_connections:
+#             self.active_connections[phone] = []
+#         self.active_connections[phone].append(websocket)
+#         print(f"✅ Connected: {phone}")
+#         print(f"[DEBUG] Active connections: {list(self.active_connections.keys())}")
+
+#     def disconnect(self, websocket: WebSocket, phone: str):
+#         phone = self.normalize_phone(phone)
+#         if phone in self.active_connections:
+#             if websocket in self.active_connections[phone]:
+#                 self.active_connections[phone].remove(websocket)
+#             if not self.active_connections[phone]:
+#                 self.active_connections.pop(phone)
+#         print(f"❌ Disconnected: {phone}")
+#         print(f"[DEBUG] Active connections: {list(self.active_connections.keys())}")
+
+#     # async def send_to_phone(self, phone: str, data: dict):
+#     #     """Send data to all active sockets for this phone"""
+#     #     phone = self.normalize_phone(phone)
+#     #     sockets = self.active_connections.get(phone, [])
+#     #     if not sockets:
+#     #         return False
+#     #     payload = json.dumps(data)
+#     #     for ws in sockets:
+#     #         try:
+#     #             await ws.send_text(payload)
+#     #         except Exception as e:
+#     #             print(f"[ERROR] Failed sending WS to {phone}: {e}")
+#     #     return True
+#     # async def send_to_phone(self, phone: str, data: dict):
+#     #     phone = self.normalize_phone(phone)
+#     #     sockets = self.active_connections.get(phone, [])
+#     #     if not sockets:
+#     #         return False
+
+#     #     payload = json.dumps(data)
+#     #     any_success = False
+#     #     dead = []
+
+#     #     for ws in list(sockets):
+#     #         try:
+#     #             await ws.send_text(payload)
+#     #             any_success = True
+#     #         except Exception as e:
+#     #             print(f"[ERROR] Failed sending WS to {phone}: {e}")
+#     #             dead.append(ws)
+
+#     #     # prune dead sockets
+#     #     for ws in dead:
+#     #         try:
+#     #             sockets.remove(ws)
+#     #         except ValueError:
+#     #             pass
+#     #     if not sockets:
+#     #         self.active_connections.pop(phone, None)
+
+#     #     return any_success
+
+    
+
+#     async def send_to_phone(self, phone: str, data: dict):
+#         phone = self.normalize_phone(phone)
+#         sockets = self.active_connections.get(phone, [])
+#         if not sockets:
+#             return False
+
+#         payload = json.dumps(data)
+#         any_success = False
+#         dead = []
+
+#         for ws in list(sockets):
+#             # If already disconnected, mark dead
+#             try:
+#                 if ws.client_state != WebSocketState.CONNECTED:
+#                     dead.append(ws)
+#                     continue
+#             except Exception:
+#                 dead.append(ws)
+#                 continue
+
+#             try:
+#                 await ws.send_text(payload)
+#                 any_success = True
+#             except Exception as e:
+#                 print(f"[WS][ERROR] send failed to {phone}: {e}")
+#                 dead.append(ws)
+
+#         # Prune dead sockets immediately so we don't mis-detect online next time
+#         for ws in dead:
+#             try:
+#                 sockets.remove(ws)
+#             except ValueError:
+#                 pass
+#         if not sockets:
+#             self.active_connections.pop(phone, None)
+
+#         print(f"[WS][SEND_TO] phone={phone} success={any_success} "
+#             f"remaining={len(self.active_connections.get(phone, []))}")
+#         return any_success
+
+
+#     async def send_personal_message(self, message_type: str, receiver: str, payload: dict):
+#         """Send chat or encrypted payload"""
+#         payload['timestamp'] = datetime.utcnow().isoformat()
+#         outer = {"type": message_type, "payload": payload}
+#         sent = await self.send_to_phone(receiver, outer)
+#         return sent
+
+#     async def send_session_keys(
+#         self, phone1: str, phone2: str, receiver: str, key1: str, key2: str, timestamp: datetime
+#     ):
+#         data = {
+#             "type": "session_key",
+#             "phone1": phone1,
+#             "phone2": phone2,
+#             "receiver": receiver,
+#             "key1": key1,
+#             "key2": key2,
+#             "timestamp": int(timestamp.timestamp() * 1000),
+#         }
+#         await self.send_to_phone(receiver, data)
 
 
 manager = ConnectionManager()
