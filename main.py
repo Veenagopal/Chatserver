@@ -879,17 +879,20 @@ async def generate_session_keys_test(
 
 
             # Store session in DB
+            # Store session in DB using canonical mapping enc_phone1 -> phone1, enc_phone2 -> phone2
             timestamp = datetime.utcnow()
             db.add(SessionKey(
                 phone1=phone1,
                 phone2=phone2,
-                key1=enc_for_sender_b64,
-                key2=enc_for_receiver_b64,
+                key1=enc_phone1,
+                key2=enc_phone2,
                 created_at=timestamp
             ))
             db.commit()
-            print("💾 Session stored in DB")
-            key1, key2 = enc_for_sender_b64, enc_for_receiver_b64
+            print("💾 Session stored in DB (canonical mapping fixed)")
+            # Use the canonical values for sending / pending storage
+            key1, key2 = enc_phone1, enc_phone2
+            print(f"[DEBUG] stored session: phone1={phone1} key1_len={len(enc_phone1)} phone2={phone2} key2_len={len(enc_phone2)}")
 
         # Deliver keys
         for user in [sender, receiver]:
