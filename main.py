@@ -662,26 +662,33 @@ def get_all_pending(db: Session = Depends(get_db)):
 #         print(f"Error in handle_chat_messages for {phone}: {outer_e}")
 #         traceback.print_exc()
 
+# Replace the entire handle_chat_messages function with this:
+
 async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
     try:
         # Normalize once so DB lookups & maps match consistently
         phone = manager.normalize_phone(phone)
 
-        # 1) Send pending messages first (unchanged logic, but normalized phone)
+        # 1) Send pending messages first
         pending = db.query(PendingMessage).filter(
             PendingMessage.receiver_phone == phone
         ).all()
+        
         for msg in pending:
             try:
+                payload = json.loads(msg.message)
                 await websocket.send_text(json.dumps({
-                    "type": "chat_message",   # same as live messages
-                    "payload": json.loads(msg.message)  # reuse stored payload
+                    "type": payload.get("type", "chat_message"),  # Use stored type
+                    "payload": payload
                 }))
+                print(f"✅ Sent pending message to {phone}: {payload.get('type', 'chat_message')}")
             except WebSocketDisconnect:
                 print(f"WS disconnected while sending to {phone}")
+                break
             except Exception as e:
                 print(f"Error sending WS message to {phone}: {e}")
-
+                traceback.print_exc()
+            
             db.delete(msg)
         db.commit()
 
@@ -690,51 +697,79 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
             try:
                 # Idle-timeout: if nothing arrives for KEEPALIVE_SECONDS, send keepalive
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=KEEPALIVE_SECONDS)
-                # --- sanitize / ignore heartbeats or junk frames ---
+                
+                # Sanitize / ignore empty frames
                 if not data or not data.strip():
-                    # empty text frame — ignore
                     continue
+                    
                 try:
                     obj = json.loads(data)
                 except json.JSONDecodeError:
-                    # not JSON — ignore
+                    print(f"Invalid JSON from {phone}: {data[:100]}")
                     continue
+                
                 msg_type = (obj.get("type") or "").lower()
+                
+                # Handle keepalive/ping separately
                 if msg_type in ("keepalive", "ping", "pong", "heartbeat"):
-                    # optional: reply to ping with pong
                     if msg_type == "ping":
                         try:
                             await websocket.send_text(json.dumps({"type": "pong"}))
                         except Exception:
                             pass
-                    # ignore heartbeats
                     continue
 
-                if obj.get("type") == "chat_message":
+                # Handle all message types: chat_message, reaction, read_receipt, etc.
+                if msg_type in ("chat_message", "reaction", "read_receipt", "typing", "message_deleted"):
                     payload = obj.get("payload", {}) or {}
-                    receiver_phone = manager.normalize_phone(payload.get("to", ""))
-                    #print(payload )
-
-                    # Try to deliver via the connection manager (don’t peek into active_connections)
+                    receiver_phone_raw = payload.get("to", "")
+                    
+                    if not receiver_phone_raw:
+                        print(f"⚠️ No receiver in payload from {phone}: {msg_type}")
+                        continue
+                    
+                    receiver_phone = manager.normalize_phone(receiver_phone_raw)
+                    
+                    # Ensure sender is set correctly (some message types might not have it)
+                    if "from" not in payload or not payload["from"]:
+                        payload["from"] = phone
+                    else:
+                        # Normalize the sender phone too
+                        payload["from"] = manager.normalize_phone(payload["from"])
+                    
+                    print(f"📨 {msg_type} from {phone} to {receiver_phone}")
+                    
+                    # Try to deliver via the connection manager
                     sent = await manager.send_personal_message(
-                        "chat_message",
+                        msg_type,  # Use actual message type
                         receiver=receiver_phone,
-                        payload=payload  # full encrypted payload
+                        payload=payload
                     )
 
                     if not sent:
-                        # Store full payload for offline delivery
-                        print(f"Receiver {receiver_phone} is offline; storing in PendingMessage table")
+                        # Store for offline delivery with the correct type
+                        print(f"💾 Receiver {receiver_phone} is offline; storing {msg_type} in PendingMessage table")
+                        
+                        # Store the full payload with type information
+                        stored_payload = {
+                            "type": msg_type,
+                            "from": payload.get("from"),
+                            "to": receiver_phone,
+                            **payload  # Include all other fields
+                        }
+                        
                         db.add(PendingMessage(
                             sender_phone=phone,
                             receiver_phone=receiver_phone,
-                            message=json.dumps(payload),
+                            message=json.dumps(stored_payload),
                             timestamp=datetime.utcnow()
                         ))
                         db.commit()
+                    else:
+                        print(f"✅ {msg_type} delivered to {receiver_phone}")
 
             except asyncio.TimeoutError:
-                # No traffic for KEEPALIVE_SECONDS → keep the socket warm for NAT/proxies
+                # No traffic for KEEPALIVE_SECONDS → keep the socket warm
                 try:
                     await websocket.send_text(json.dumps({"type": "keepalive"}))
                 except WebSocketDisconnect as ii:
@@ -1025,7 +1060,34 @@ def get_pending_messages(receiver_phone: str, db: Session = Depends(get_db)):
 
     messages = db.query(PendingMessage).filter(PendingMessage.receiver_phone == r).all()
     return {"type": "pending_messages", "payload": [{"from": m.sender_phone, "message": m.message, "timestamp": m.timestamp.isoformat()} for m in messages]}
+@app.get("/check-online/{phone}")
+def check_online(phone: str):
+    phone_norm = manager.normalize_phone(phone)
+    is_online = phone_norm in manager.active_connections and len(manager.active_connections[phone_norm]) > 0
+    return {"type": "online_status", "payload": {"phone": phone_norm, "online": is_online}}
 
+
+@app.get("/debug-pending-by-type/{receiver_phone}")
+def get_pending_by_type(receiver_phone: str, db: Session = Depends(get_db)):
+    r = normalize_phone(receiver_phone)
+    messages = db.query(PendingMessage).filter(PendingMessage.receiver_phone == r).all()
+    
+    result = {}
+    for m in messages:
+        try:
+            payload = json.loads(m.message)
+            msg_type = payload.get("type", "unknown")
+            if msg_type not in result:
+                result[msg_type] = []
+            result[msg_type].append({
+                "from": m.sender_phone,
+                "payload": payload,
+                "timestamp": m.timestamp.isoformat()
+            })
+        except:
+            pass
+    
+    return {"type": "pending_by_type", "payload": result}
 
 # ------------------- WEBSOCKET ENDPOINT --------------------
 @app.websocket("/ws/{phone}")
