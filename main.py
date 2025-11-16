@@ -669,48 +669,50 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
         # Normalize once so DB lookups & maps match consistently
         phone = manager.normalize_phone(phone)
 
-        # 1) Send pending messages first
+        # 1) Send pending messages first (use normalized receiver match)
         pending = db.query(PendingMessage).filter(
             PendingMessage.receiver_phone == phone
         ).all()
-        
+
         for msg in pending:
             try:
                 payload = json.loads(msg.message)
                 await websocket.send_text(json.dumps({
-                    "type": payload.get("type", "chat_message"),  # Use stored type
+                    "type": payload.get("type", "chat_message"),
                     "payload": payload
                 }))
-                print(f"✅ Sent pending message to {phone}: {payload.get('type', 'chat_message')}")
+                print(f"✅ Sent pending message to {phone}: {payload.get('type', 'chat_message')} message_id={payload.get('message_id')}")
             except WebSocketDisconnect:
                 print(f"WS disconnected while sending to {phone}")
                 break
             except Exception as e:
                 print(f"Error sending WS message to {phone}: {e}")
                 traceback.print_exc()
-            
-            db.delete(msg)
+
+            # Delete pending row after successful send
+            try:
+                db.delete(msg)
+            except Exception:
+                pass
+
         db.commit()
 
-        # 2) Handle new incoming messages with heartbeat + idle-timeout
+        # 2) Handle new incoming messages with keepalive / idle-timeout
         while True:
             try:
-                # Idle-timeout: if nothing arrives for KEEPALIVE_SECONDS, send keepalive
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=KEEPALIVE_SECONDS)
-                
-                # Sanitize / ignore empty frames
+
                 if not data or not data.strip():
                     continue
-                    
+
                 try:
                     obj = json.loads(data)
                 except json.JSONDecodeError:
                     print(f"Invalid JSON from {phone}: {data[:100]}")
                     continue
-                
+
                 msg_type = (obj.get("type") or "").lower()
-                
-                # Handle keepalive/ping separately
+                # keepalive
                 if msg_type in ("keepalive", "ping", "pong", "heartbeat"):
                     if msg_type == "ping":
                         try:
@@ -719,57 +721,90 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
                             pass
                     continue
 
-                # Handle all message types: chat_message, reaction, read_receipt, etc.
-                if msg_type in ("chat_message", "reaction", "read_receipt", "typing", "message_deleted"):
-                    payload = obj.get("payload", {}) or {}
-                    receiver_phone_raw = payload.get("to", "")
-                    
-                    if not receiver_phone_raw:
-                        print(f"⚠️ No receiver in payload from {phone}: {msg_type}")
-                        continue
-                    
-                    receiver_phone = manager.normalize_phone(receiver_phone_raw)
-                    
-                    # Ensure sender is set correctly (some message types might not have it)
-                    if "from" not in payload or not payload["from"]:
-                        payload["from"] = phone
-                    else:
-                        # Normalize the sender phone too
-                        payload["from"] = manager.normalize_phone(payload["from"])
-                    
-                    print(f"📨 {msg_type} from {phone} to {receiver_phone}")
-                    
-                    # Try to deliver via the connection manager
-                    sent = await manager.send_personal_message(
-                        msg_type,  # Use actual message type
-                        receiver=receiver_phone,
-                        payload=payload
-                    )
+                # only handle expected types
+                if msg_type not in ("chat_message", "reaction", "read_receipt", "typing", "message_deleted"):
+                    print(f"Unknown msg_type {msg_type} from {phone}")
+                    continue
 
-                    if not sent:
-                        # Store for offline delivery with the correct type
-                        print(f"💾 Receiver {receiver_phone} is offline; storing {msg_type} in PendingMessage table")
-                        
-                        # Store the full payload with type information
-                        stored_payload = {
-                            "type": msg_type,
-                            "from": payload.get("from"),
-                            "to": receiver_phone,
-                            **payload  # Include all other fields
-                        }
-                        
+                payload = obj.get("payload", {}) or {}
+                # Ensure message id exists (client should provide it; server will synthesize if missing)
+                message_id = payload.get("message_id")
+                if not message_id:
+                    message_id = f"m-{int(datetime.utcnow().timestamp()*1000)}-{np.random.randint(0,1<<30)}"
+                    payload["message_id"] = message_id
+
+                receiver_phone_raw = payload.get("to", "")
+                if not receiver_phone_raw:
+                    print(f"⚠️ No receiver in payload from {phone}: {msg_type}")
+                    continue
+
+                receiver_phone = manager.normalize_phone(receiver_phone_raw)
+                sender_phone = manager.normalize_phone(payload.get("from", phone))
+
+                # Canonicalize fields
+                payload["from"] = sender_phone
+                payload["to"] = receiver_phone
+
+                print(f"📨 {msg_type} from {sender_phone} -> {receiver_phone} id={message_id}")
+
+                # Try to deliver
+                sent = await manager.send_personal_message(msg_type, receiver=receiver_phone, payload=payload)
+
+                if sent:
+                    print(f"✅ {msg_type} delivered to {receiver_phone}")
+
+                    # Send delivery receipt back to sender for chat_message/reaction (so UI shows double-tick)
+                    if msg_type in ("chat_message", "reaction"):
+                        try:
+                            ack_payload = {
+                                "message_id": message_id,
+                                "from": sender_phone,
+                                "to": receiver_phone,
+                                "delivered": True,
+                                "timestamp": datetime.utcnow().isoformat()
+                            }
+                            await manager.send_personal_message("delivery_receipt", receiver=sender_phone, payload=ack_payload)
+                        except Exception as e:
+                            print(f"[WARN] failed to ack-delivery to {sender_phone}: {e}")
+
+                    # If message_deleted, also remove any pending rows (so offline later won't deliver)
+                    if msg_type == "message_deleted":
+                        try:
+                            # Best if PendingMessage has message_id column; this 'contains' is fallback
+                            rows_deleted = db.query(PendingMessage).filter(
+                                PendingMessage.receiver_phone == receiver_phone,
+                                PendingMessage.message.contains(message_id)
+                            ).delete(synchronize_session=False)
+                            db.commit()
+                            print(f"[DB] Deleted {rows_deleted} pending rows for deleted message {message_id}")
+                        except Exception as e:
+                            db.rollback()
+                            print(f"[ERROR] Error deleting pending rows for message_deleted: {e}")
+
+                else:
+                    # Receiver offline => store pending message for offline delivery
+                    stored_payload = {
+                        "type": msg_type,
+                        "message_id": message_id,
+                        "from": sender_phone,
+                        "to": receiver_phone,
+                        **payload
+                    }
+                    try:
                         db.add(PendingMessage(
-                            sender_phone=phone,
+                            sender_phone=sender_phone,
                             receiver_phone=receiver_phone,
                             message=json.dumps(stored_payload),
                             timestamp=datetime.utcnow()
                         ))
                         db.commit()
-                    else:
-                        print(f"✅ {msg_type} delivered to {receiver_phone}")
+                        print(f"💾 Stored pending {msg_type} for {receiver_phone} message_id={message_id}")
+                    except Exception as e:
+                        db.rollback()
+                        print(f"[ERROR] Failed to store pending message: {e}")
 
             except asyncio.TimeoutError:
-                # No traffic for KEEPALIVE_SECONDS → keep the socket warm
+                # keepalive when idle
                 try:
                     await websocket.send_text(json.dumps({"type": "keepalive"}))
                 except WebSocketDisconnect as ii:
@@ -791,6 +826,7 @@ async def handle_chat_messages(db: Session, websocket: WebSocket, phone: str):
     except Exception as outer_e:
         print(f"Error in handle_chat_messages for {phone}: {outer_e}")
         traceback.print_exc()
+
 
 # ------------------- ENDPOINTS -----------------------------
 # @app.get("/where-is-db")
